@@ -243,10 +243,10 @@ class H5DataVisualizer:
         
         controls = [
             "Space - Play/Pause",
-            "Left/Right - Prev/Next frame",
-            "Up/Down - Speed +/-",
-            "Home - First frame",
-            "End - Last frame",
+            "A/D - Prev/Next frame",
+            "W/S - Speed +/-",
+            "H - First frame",
+            "E - Last frame",
             "Q/ESC - Quit"
         ]
         
@@ -312,10 +312,10 @@ class H5DataVisualizer:
         print("\n🎬 启动可视化窗口...")
         print("操作说明:")
         print("  • 空格键: 播放/暂停")
-        print("  • 左/右方向键: 上一帧/下一帧")
-        print("  • 上/下方向键: 加速/减速")
-        print("  • Home键: 跳到第一帧")
-        print("  • End键: 跳到最后一帧")
+        print("  • A/D键: 上一帧/下一帧")
+        print("  • W/S键: 加速/减速")
+        print("  • H键: 跳到第一帧")
+        print("  • E键: 跳到最后一帧")
         print("  • Q或ESC: 退出\n")
         
         window_name = "H5 Data Viewer"
@@ -323,7 +323,11 @@ class H5DataVisualizer:
         
         while True:
             # 获取当前帧
-            rgb_frame = self.rgb_data[self.current_frame]
+            rgb_frame = self.rgb_data[self.current_frame].copy()
+            
+            # 调试：在图像上显示帧号
+            cv2.putText(rgb_frame, f"Frame: {self.current_frame}", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 2)
             
             # 放大图像
             display_image = cv2.resize(rgb_frame, (800, 600))
@@ -338,43 +342,44 @@ class H5DataVisualizer:
             # 显示
             cv2.imshow(window_name, combined)
             
-            # 处理按键
+            # 处理按键 - 播放时等待较短时间，暂停时等待按键
             wait_time = self.play_speed if self.playing else 1
             key = cv2.waitKey(wait_time) & 0xFF
             
-            if key == 27 or key == ord('q'):  # ESC or Q
+            # 自动播放：在按键处理之前更新帧
+            if self.playing and key == 255:  # 255表示没有按键
+                self.current_frame += 1
+                if self.current_frame >= self.total_frames:
+                    self.current_frame = 0  # 循环播放
+                continue  # 立即进入下一次循环显示新帧
+            
+            if key == 27 or key == ord('q') or key == ord('Q'):  # ESC or Q
                 print("退出可视化")
                 break
             elif key == 32:  # Space
                 self.playing = not self.playing
                 status = "播放" if self.playing else "暂停"
                 print(f"状态: {status}")
-            elif key == 81 or key == 2:  # Left arrow
+            elif key == ord('a') or key == ord('A'):  # A - 上一帧
                 self.current_frame = max(0, self.current_frame - 1)
                 self.playing = False
-            elif key == 83 or key == 3:  # Right arrow
+            elif key == ord('d') or key == ord('D'):  # D - 下一帧
                 self.current_frame = min(self.total_frames - 1, self.current_frame + 1)
                 self.playing = False
-            elif key == 82 or key == 0:  # Up arrow
+            elif key == ord('w') or key == ord('W'):  # W - 加速
                 self.play_speed = max(10, self.play_speed - 10)
                 print(f"播放速度: {1000/self.play_speed:.1f} FPS")
-            elif key == 84 or key == 1:  # Down arrow
+            elif key == ord('s') or key == ord('S'):  # S - 减速
                 self.play_speed = min(200, self.play_speed + 10)
                 print(f"播放速度: {1000/self.play_speed:.1f} FPS")
-            elif key == ord('h') or key == 80:  # Home
+            elif key == ord('h') or key == ord('H'):  # H - 第一帧
                 self.current_frame = 0
                 self.playing = False
                 print("跳到第一帧")
-            elif key == ord('e') or key == 87:  # End
+            elif key == ord('e') or key == ord('E'):  # E - 最后一帧
                 self.current_frame = self.total_frames - 1
                 self.playing = False
                 print("跳到最后一帧")
-            
-            # 自动播放
-            if self.playing:
-                self.current_frame += 1
-                if self.current_frame >= self.total_frames:
-                    self.current_frame = 0  # 循环播放
         
         cv2.destroyAllWindows()
 

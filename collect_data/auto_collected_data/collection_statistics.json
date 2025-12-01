@@ -1,8 +1,8 @@
 {
-    "total_routes_attempted": 2,
-    "total_routes_completed": 1,
-    "total_frames_collected": 2000,
-    "total_time_seconds": 40.92414951324463,
+    "total_routes_attempted": 7,
+    "total_routes_completed": 6,
+    "total_frames_collected": 8765,
+    "total_time_seconds": 154.52660083770752,
     "failed_routes": [],
-    "timestamp": "2025-12-01T16:51:16.716659"
+    "timestamp": "2025-12-01T21:03:31.394193"
 }

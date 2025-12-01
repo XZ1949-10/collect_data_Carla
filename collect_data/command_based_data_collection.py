@@ -61,14 +61,15 @@ class CommandBasedDataCollector:
     
     def __init__(self, host='localhost', port=2000, town='Town01',
                  ignore_traffic_lights=True, ignore_signs=True, 
-                 ignore_vehicles_percentage=80, target_speed=20.0):
+                 ignore_vehicles_percentage=80, target_speed=10.0, simulation_fps=20):
         """初始化
         
         参数:
             ignore_traffic_lights: 是否忽略红绿灯
             ignore_signs: 是否忽略停车标志
             ignore_vehicles_percentage: 忽略其他车辆的百分比（0-100）
-            target_speed: 目标速度（km/h），默认20
+            target_speed: 目标速度（km/h），默认10
+            simulation_fps: 模拟帧率（FPS），默认20
         """
         self.host = host
         self.port = port
@@ -79,6 +80,7 @@ class CommandBasedDataCollector:
         self.ignore_signs = ignore_signs
         self.ignore_vehicles_percentage = ignore_vehicles_percentage
         self.target_speed = target_speed  # 添加目标速度配置
+        self.simulation_fps = simulation_fps  # 添加帧率配置
         
         # Carla对象
         self.client = None
@@ -136,11 +138,12 @@ class CommandBasedDataCollector:
         
         self.blueprint_library = self.world.get_blueprint_library()
         
-        # 设置同步模式
+        # 设置同步模式（使用配置的帧率）
         settings = self.world.get_settings()
         settings.synchronous_mode = True
-        settings.fixed_delta_seconds = 0.05  # 20FPS
+        settings.fixed_delta_seconds = 1.0 / self.simulation_fps  # 根据配置的FPS计算
         self.world.apply_settings(settings)
+        print(f"✅ 已设置同步模式: {self.simulation_fps} FPS (delta={settings.fixed_delta_seconds:.4f}s)")
         
         print("成功连接到Carla服务器！")
         
@@ -175,13 +178,37 @@ class CommandBasedDataCollector:
         if AGENTS_AVAILABLE:
             print(f"正在配置 BasicAgent（按规划路线行驶）...")
             
-            # 创建 BasicAgent 配置
+            # 创建 BasicAgent 配置（优化转弯性能）
+            # 关键参数说明：
+            # - sampling_resolution: 路点采样间距，越小路径越精确
+            # - lateral_control_dict: 横向PID控制器参数，影响转向响应
+            # - max_steering: 最大转向角度限制
             opt_dict = {
                 'target_speed': self.target_speed,  # 使用可配置的速度
                 'ignore_traffic_lights': self.ignore_traffic_lights,
                 'ignore_stop_signs': self.ignore_signs,
                 'ignore_vehicles': (self.ignore_vehicles_percentage > 50),
-                'sampling_resolution': 2.0
+                'sampling_resolution': 1.0,  # 降低到1.0米，提高路径精度（防止转弯失控）
+                'base_tlight_threshold': 5.0,  # 红绿灯检测距离
+                # 优化横向PID控制器参数（转向控制）
+                'lateral_control_dict': {
+                    'K_P': 1.5,   # 比例增益，增大以提高转向响应
+                    'K_I': 0.0,   # 积分增益，保持0避免累积误差
+                    'K_D': 0.05,  # 微分增益，增加阻尼减少振荡
+                    'dt': 1.0 / self.simulation_fps  # 时间步长
+                },
+                # 优化纵向PID控制器参数（速度控制）
+                'longitudinal_control_dict': {
+                    'K_P': 1.0,
+                    'K_I': 0.05,
+                    'K_D': 0.0,
+                    'dt': 1.0 / self.simulation_fps
+                },
+                'max_steering': 0.8,  # 最大转向角度
+                'max_throttle': 0.75,
+                'max_brake': 0.5,
+                'base_min_distance': 2.0,  # 减小最小距离，更早开始转向
+                'distance_ratio': 0.3  # 减小距离比率
             }
             
             # 创建 BasicAgent
@@ -294,7 +321,7 @@ class CommandBasedDataCollector:
                                 paused=True, is_collecting=True)
         
         print("\n" + "="*70)
-        print(f"⏸️  车辆已暂停 - 检测到命令: {self.command_names.get(command, 'Unknown')} (命令{command})")
+        print(f"⏸️  车辆已暂停 - 检测到命令: {self.command_names.get(int(command), 'Unknown')} (命令{command})")
         print("="*70)
         print(f"\n💡 提示：车辆已停止，等待你的指令")
         print(f"   - CARLA画面已冻结")
@@ -357,7 +384,7 @@ class CommandBasedDataCollector:
         print(f"  将分割成: {num_chunks} 个文件（每个最多200条）")
         
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        command_name = self.command_names.get(command, 'Unknown')
+        command_name = self.command_names.get(int(command), 'Unknown')
         
         for chunk_idx in range(num_chunks):
             start_idx = chunk_idx * 200
@@ -436,7 +463,7 @@ class CommandBasedDataCollector:
         print(f"\n{'='*70}")
         print(f"🎬 准备开始收集")
         print(f"{'='*70}")
-        print(f"初始命令: {self.command_names.get(self.current_command, 'Unknown')} (命令{self.current_command})")
+        print(f"初始命令: {self.command_names.get(int(self.current_command), 'Unknown')} (命令{self.current_command})")
         print("正在获取初始画面...")
         
         initial_image = None
@@ -510,8 +537,8 @@ class CommandBasedDataCollector:
                         # 检查命令变化
                         new_command = self._get_navigation_command()
                         if new_command != self.current_command:
-                            print(f"✅ 命令已变化: {self.command_names.get(self.current_command, 'Unknown')} → "
-                                  f"{self.command_names.get(new_command, 'Unknown')}\n")
+                            print(f"✅ 命令已变化: {self.command_names.get(int(self.current_command), 'Unknown')} → "
+                                  f"{self.command_names.get(int(new_command), 'Unknown')}\n")
                             break
                         
                         skip_frames += 1
@@ -530,13 +557,13 @@ class CommandBasedDataCollector:
                                                 collected_frames, max_frames, is_collecting=False)
                         
                         if skip_frames % 50 == 0:
-                            print(f"  [跳过中] 帧数: {skip_frames}, 当前命令: {self.command_names.get(new_command, 'Unknown')}")
+                            print(f"  [跳过中] 帧数: {skip_frames}, 当前命令: {self.command_names.get(int(new_command), 'Unknown')}")
                     
                     continue  # 返回询问下一段
                 
                 # ▶️ 步骤2：用户选择保存，开始收集200帧
                 save_command = self.current_command  # 记录用户选择保存时的命令（用于文件名）
-                print(f"✅ 开始收集 {self.command_names[save_command]} 命令段（目标：200帧）...")
+                print(f"✅ 开始收集 {self.command_names[int(save_command)]} 命令段（目标：200帧）...")
                 
                 self.current_segment_data = {'rgb': [], 'targets': []}
                 self.segment_count = 0
@@ -597,7 +624,7 @@ class CommandBasedDataCollector:
                     # 进度显示
                     if self.segment_count % 50 == 0:
                         print(f"  [收集中] 进度: {self.segment_count}/200 帧, "
-                              f"当前命令: {self.command_names.get(current_cmd, 'Unknown')}, "
+                              f"当前命令: {self.command_names.get(int(current_cmd), 'Unknown')}, "
                               f"速度: {speed_kmh:.1f} km/h")
                 
                 # ✅ 步骤3：自动保存（使用用户选择保存时的命令名）
@@ -640,6 +667,9 @@ class CommandBasedDataCollector:
             paused: 是否处于暂停状态
             is_collecting: 是否正在收集数据（保存模式）
         """
+        # 确保command是整数类型用于字典查找
+        command = int(command)
+        
         command_names = {2: 'Follow', 3: 'Left', 4: 'Right', 5: 'Straight'}
         command_colors = {2: (100, 255, 100), 3: (100, 100, 255), 
                          4: (255, 100, 100), 5: (255, 255, 100)}
@@ -704,11 +734,16 @@ class CommandBasedDataCollector:
                    font, 0.7, cmd_color, 2)
         y_pos += 50
         
-        # 速度
+        # 速度（实际速度）
         speed_color = (100, 255, 100) if speed < 60 else (255, 200, 100)
         cv2.putText(info_panel, f"Speed: {speed:.1f} km/h", (10, y_pos), 
                    font, 0.6, speed_color, 2)
-        y_pos += 60
+        y_pos += 30
+        
+        # 目标速度
+        cv2.putText(info_panel, f"Target: {self.target_speed:.1f} km/h", (10, y_pos), 
+                   font, 0.5, (150, 150, 150), 1)
+        y_pos += 40
         
         # 统计
         cv2.putText(info_panel, "=== Statistics ===", (10, y_pos), 
@@ -760,6 +795,9 @@ class CommandBasedDataCollector:
         """
         从 BasicAgent 的 local_planner 获取当前导航命令
         
+        改进：使用 get_incoming_waypoint_and_direction() 获取前方路点的方向，
+        而不是当前目标路点的方向。这样可以更准确地反映即将执行的动作。
+        
         返回:
             float: 命令数值 (2.0=Follow, 3.0=Left, 4.0=Right, 5.0=Straight, 0.0=VOID)
         """
@@ -773,10 +811,17 @@ class CommandBasedDataCollector:
             if local_planner is None:
                 return 2.0
             
-            # 获取当前目标路点的 RoadOption
-            road_option = local_planner.target_road_option
-            if road_option is None:
-                road_option = RoadOption.LANEFOLLOW
+            # 优先使用前方路点的方向（更准确地反映即将执行的动作）
+            # steps=3 表示前瞻3个路点
+            incoming_wp, incoming_direction = local_planner.get_incoming_waypoint_and_direction(steps=3)
+            
+            if incoming_direction is not None and incoming_direction != RoadOption.VOID:
+                road_option = incoming_direction
+            else:
+                # 降级：使用当前目标路点的方向
+                road_option = local_planner.target_road_option
+                if road_option is None:
+                    road_option = RoadOption.LANEFOLLOW
             
             # 映射到数值命令
             command = self.road_option_to_command.get(road_option, 2.0)

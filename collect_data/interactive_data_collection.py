@@ -517,8 +517,9 @@ class InteractiveDataCollector:
         
         # 获取LocalPlanner的target_speed配置
         target_speed = 10.0  # 使用下面opt_dict中的速度
+        simulation_fps = 20  # 默认帧率
         
-        # 创建基于命令的数据收集器（传递target_speed）
+        # 创建基于命令的数据收集器（传递target_speed和simulation_fps）
         self.collector = CommandBasedDataCollector(
             host=self.host,
             port=self.port,
@@ -526,7 +527,8 @@ class InteractiveDataCollector:
             ignore_traffic_lights=self.ignore_traffic_lights,
             ignore_signs=self.ignore_signs,
             ignore_vehicles_percentage=self.ignore_vehicles_percentage,
-            target_speed=target_speed  # ⭐ 传递速度参数
+            target_speed=target_speed,  # ⭐ 传递速度参数
+            simulation_fps=simulation_fps  # ⭐ 传递帧率参数
         )
         
         # 复用已有的连接

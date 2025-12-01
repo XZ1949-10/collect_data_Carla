@@ -45,7 +45,8 @@ class AutoFullTownCollector:
     
     def __init__(self, host='localhost', port=2000, town='Town01',
                  ignore_traffic_lights=True, ignore_signs=True,
-                 ignore_vehicles_percentage=80):
+                 ignore_vehicles_percentage=80, target_speed=10.0,
+                 simulation_fps=20, spawn_npc_vehicles=False, num_npc_vehicles=0):
         """
         初始化全自动收集器
         
@@ -56,6 +57,10 @@ class AutoFullTownCollector:
             ignore_traffic_lights (bool): 是否忽略红绿灯
             ignore_signs (bool): 是否忽略停车标志
             ignore_vehicles_percentage (int): 忽略其他车辆的百分比
+            target_speed (float): 目标速度（km/h）
+            simulation_fps (int): 模拟帧率
+            spawn_npc_vehicles (bool): 是否生成NPC车辆
+            num_npc_vehicles (int): NPC车辆数量
         """
         self.host = host
         self.port = port
@@ -66,11 +71,18 @@ class AutoFullTownCollector:
         self.ignore_signs = ignore_signs
         self.ignore_vehicles_percentage = ignore_vehicles_percentage
         
+        # 车辆和模拟配置
+        self.target_speed = target_speed
+        self.simulation_fps = simulation_fps
+        self.spawn_npc_vehicles = spawn_npc_vehicles
+        self.num_npc_vehicles = num_npc_vehicles
+        
         # CARLA对象
         self.client = None
         self.world = None
         self.spawn_points = []
         self.route_planner = None
+        self.npc_vehicles = []  # 存储NPC车辆列表
         
         # 数据收集器
         self.collector = None
@@ -113,11 +125,23 @@ class AutoFullTownCollector:
         self.spawn_points = self.world.get_map().get_spawn_points()
         print(f"✅ 成功连接！共找到 {len(self.spawn_points)} 个生成点")
         
-        # 显示交通规则配置
-        print(f"\n📋 交通规则配置:")
-        print(f"  • 忽略红绿灯: {'✅ 是' if self.ignore_traffic_lights else '❌ 否'}")
-        print(f"  • 忽略停车标志: {'✅ 是' if self.ignore_signs else '❌ 否'}")
-        print(f"  • 忽略其他车辆: {self.ignore_vehicles_percentage}%")
+        # 显示配置信息
+        print(f"\n📋 配置信息:")
+        print(f"  交通规则:")
+        print(f"    • 忽略红绿灯: {'✅ 是' if self.ignore_traffic_lights else '❌ 否'}")
+        print(f"    • 忽略停车标志: {'✅ 是' if self.ignore_signs else '❌ 否'}")
+        print(f"    • 忽略其他车辆: {self.ignore_vehicles_percentage}%")
+        print(f"  车辆设置:")
+        print(f"    • 目标速度: {self.target_speed:.1f} km/h")
+        print(f"    • 模拟帧率: {self.simulation_fps} FPS")
+        print(f"  世界环境:")
+        print(f"    • 生成NPC车辆: {'✅ 是' if self.spawn_npc_vehicles else '❌ 否'}")
+        if self.spawn_npc_vehicles:
+            print(f"    • NPC车辆数量: {self.num_npc_vehicles}")
+        
+        # 生成NPC车辆（如果配置启用）
+        if self.spawn_npc_vehicles and self.num_npc_vehicles > 0:
+            self._spawn_npc_vehicles()
         
         # 初始化路径规划器
         if AGENTS_AVAILABLE:
@@ -219,6 +243,11 @@ class AutoFullTownCollector:
             # 估算收集时间
             estimated_minutes = len(route_pairs) * 2  # 假设每条路线2分钟
             print(f"  • 预计耗时: {estimated_minutes:.0f}分钟 ({estimated_minutes/60:.1f}小时)")
+            
+            # 打乱路线顺序，避免每次都从同一起点开始
+            import random
+            random.shuffle(route_pairs)
+            print(f"  • ✅ 已打乱路线顺序（避免重复从同一起点出发）")
         
         print()
         return route_pairs
@@ -228,6 +257,53 @@ class AutoFullTownCollector:
         dx = loc2.x - loc1.x
         dy = loc2.y - loc1.y
         return np.sqrt(dx**2 + dy**2)
+    
+    def _spawn_npc_vehicles(self):
+        """生成NPC车辆"""
+        print(f"\n🚗 正在生成 {self.num_npc_vehicles} 辆NPC车辆...")
+        
+        try:
+            # 获取车辆蓝图
+            blueprints = self.world.get_blueprint_library().filter('vehicle.*')
+            blueprints = [x for x in blueprints if int(x.get_attribute('number_of_wheels')) == 4]
+            
+            # 获取可用的生成点
+            spawn_points = self.world.get_map().get_spawn_points()
+            random.shuffle(spawn_points)
+            
+            # 生成车辆
+            spawned_count = 0
+            for i in range(min(self.num_npc_vehicles, len(spawn_points))):
+                blueprint = random.choice(blueprints)
+                
+                # 设置自动驾驶
+                if blueprint.has_attribute('color'):
+                    color = random.choice(blueprint.get_attribute('color').recommended_values)
+                    blueprint.set_attribute('color', color)
+                
+                # 尝试生成车辆
+                npc = self.world.try_spawn_actor(blueprint, spawn_points[i])
+                if npc is not None:
+                    npc.set_autopilot(True)
+                    self.npc_vehicles.append(npc)
+                    spawned_count += 1
+            
+            print(f"✅ 成功生成 {spawned_count} 辆NPC车辆")
+            
+        except Exception as e:
+            print(f"⚠️  生成NPC车辆时出错: {e}")
+    
+    def _cleanup_npc_vehicles(self):
+        """清理NPC车辆"""
+        if self.npc_vehicles:
+            print(f"\n🧹 正在清理 {len(self.npc_vehicles)} 辆NPC车辆...")
+            for vehicle in self.npc_vehicles:
+                try:
+                    vehicle.destroy()
+                except:
+                    pass
+            self.npc_vehicles = []
+            print("✅ NPC车辆清理完成")
     
     def validate_route(self, start_idx, end_idx):
         """
@@ -287,14 +363,15 @@ class AutoFullTownCollector:
         print(f"{'='*70}")
         
         try:
-            # 创建数据收集器
+            # 创建数据收集器（使用配置的参数）
             self.collector = CommandBasedDataCollector(
                 host=self.host,
                 port=self.port,
                 town=self.town,
                 ignore_traffic_lights=self.ignore_traffic_lights,
                 ignore_signs=self.ignore_signs,
-                ignore_vehicles_percentage=self.ignore_vehicles_percentage
+                ignore_vehicles_percentage=self.ignore_vehicles_percentage,
+                target_speed=self.target_speed  # 使用配置的目标速度
             )
             
             # 复用已有的连接
@@ -302,12 +379,13 @@ class AutoFullTownCollector:
             self.collector.world = self.world
             self.collector.blueprint_library = self.world.get_blueprint_library()
             
-            # 设置同步模式
+            # 设置同步模式（使用配置的帧率）
             settings = self.world.get_settings()
             if not settings.synchronous_mode:
                 settings.synchronous_mode = True
-                settings.fixed_delta_seconds = 0.05  # 20FPS
+                settings.fixed_delta_seconds = 1.0 / self.simulation_fps  # 根据配置的FPS计算
                 self.world.apply_settings(settings)
+                print(f"✅ 已设置同步模式: {self.simulation_fps} FPS (delta={settings.fixed_delta_seconds:.4f}s)")
             
             # 生成车辆
             if not self.collector.spawn_vehicle(start_idx, end_idx):
@@ -467,7 +545,7 @@ class AutoFullTownCollector:
                 
                 # 进度显示
                 if collected_frames % 100 == 0:
-                    cmd_name = self.collector.command_names.get(current_cmd, 'Unknown')
+                    cmd_name = self.collector.command_names.get(int(current_cmd), 'Unknown')
                     print(f"  [收集中] 帧数: {collected_frames}/{max_frames}, "
                           f"命令: {cmd_name}, 速度: {speed_kmh:.1f} km/h")
             
@@ -514,7 +592,7 @@ class AutoFullTownCollector:
         
         # 生成文件名
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        command_name = self.collector.command_names.get(command, 'Unknown')
+        command_name = self.collector.command_names.get(int(command), 'Unknown')
         filename = os.path.join(
             save_path,
             f"carla_cmd{command}_{command_name}_{timestamp}.h5"
@@ -618,6 +696,9 @@ class AutoFullTownCollector:
             import traceback
             traceback.print_exc()
         finally:
+            # 清理NPC车辆
+            self._cleanup_npc_vehicles()
+            
             # 恢复异步模式
             if self.world is not None:
                 try:
@@ -671,54 +752,172 @@ class AutoFullTownCollector:
         print(f"✅ 统计信息已保存到: {stats_file}\n")
 
 
+def load_config(config_path='auto_collection_config.json'):
+    """
+    加载配置文件
+    
+    参数:
+        config_path (str): 配置文件路径
+        
+    返回:
+        dict: 配置字典
+    """
+    # 默认配置
+    default_config = {
+        'carla_settings': {
+            'host': 'localhost',
+            'port': 2000,
+            'town': 'Town01'
+        },
+        'traffic_rules': {
+            'ignore_traffic_lights': True,
+            'ignore_signs': True,
+            'ignore_vehicles_percentage': 80
+        },
+        'world_settings': {
+            'spawn_npc_vehicles': False,
+            'num_npc_vehicles': 0
+        },
+        'route_generation': {
+            'strategy': 'smart',
+            'min_distance': 50.0,
+            'max_distance': 500.0
+        },
+        'collection_settings': {
+            'frames_per_route': 1000,
+            'save_path': './auto_collected_data',
+            'auto_save_interval': 200,
+            'simulation_fps': 20,
+            'target_speed_kmh': 10.0
+        }
+    }
+    
+    # 尝试加载配置文件
+    try:
+        # 获取脚本所在目录
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_file = os.path.join(script_dir, config_path)
+        
+        if os.path.exists(config_file):
+            with open(config_file, 'r', encoding='utf-8') as f:
+                loaded_config = json.load(f)
+                print(f"✅ 已加载配置文件: {config_file}")
+                
+                # 合并配置（加载的配置覆盖默认配置）
+                for section in default_config:
+                    if section in loaded_config:
+                        default_config[section].update(loaded_config[section])
+                
+                return default_config
+        else:
+            print(f"⚠️  配置文件不存在: {config_file}")
+            print(f"⚠️  使用默认配置")
+            return default_config
+            
+    except Exception as e:
+        print(f"⚠️  加载配置文件失败: {e}")
+        print(f"⚠️  使用默认配置")
+        return default_config
+
+
 def main():
     """主函数"""
     import argparse
     
     parser = argparse.ArgumentParser(description='全自动Town01数据收集器')
-    parser.add_argument('--host', default='localhost', help='CARLA服务器地址')
-    parser.add_argument('--port', type=int, default=2000, help='CARLA服务器端口')
-    parser.add_argument('--town', default='Town01', help='地图名称')
-    parser.add_argument('--save-path', default='./auto_collected_data', help='数据保存路径')
-    parser.add_argument('--strategy', choices=['smart', 'exhaustive'], default='smart',
-                       help='路线生成策略：smart=智能选择，exhaustive=穷举所有')
-    parser.add_argument('--min-distance', type=float, default=50.0, help='最小路线距离（米）')
-    parser.add_argument('--max-distance', type=float, default=500.0, help='最大路线距离（米）')
-    parser.add_argument('--frames-per-route', type=int, default=1000, help='每条路线收集的帧数')
-    parser.add_argument('--ignore-traffic-lights', action='store_true', default=True,
-                       help='忽略红绿灯')
-    parser.add_argument('--ignore-signs', action='store_true', default=True,
-                       help='忽略停车标志')
-    parser.add_argument('--ignore-vehicles', type=int, default=80,
-                       help='忽略其他车辆的百分比（0-100）')
-    parser.add_argument('--no-visualization', action='store_true',
-                       help='禁用实时可视化窗口（默认启用）')
+    parser.add_argument('--config', default='auto_collection_config.json', 
+                       help='配置文件路径（默认：auto_collection_config.json）')
+    parser.add_argument('--host', help='CARLA服务器地址（覆盖配置文件）')
+    parser.add_argument('--port', type=int, help='CARLA服务器端口（覆盖配置文件）')
+    parser.add_argument('--town', help='地图名称（覆盖配置文件）')
+    parser.add_argument('--save-path', help='数据保存路径（覆盖配置文件）')
+    parser.add_argument('--strategy', choices=['smart', 'exhaustive'],
+                       help='路线生成策略（覆盖配置文件）')
+    parser.add_argument('--min-distance', type=float, help='最小路线距离（覆盖配置文件）')
+    parser.add_argument('--max-distance', type=float, help='最大路线距离（覆盖配置文件）')
+    parser.add_argument('--frames-per-route', type=int, help='每条路线收集的帧数（覆盖配置文件）')
+    parser.add_argument('--target-speed', type=float, help='目标速度 km/h（覆盖配置文件）')
+    parser.add_argument('--fps', type=int, help='模拟帧率（覆盖配置文件）')
+    parser.add_argument('--spawn-npc', action='store_true', help='生成NPC车辆（覆盖配置文件）')
+    parser.add_argument('--num-npc', type=int, help='NPC车辆数量（覆盖配置文件）')
     
     args = parser.parse_args()
     
+    # 加载配置文件
+    config = load_config(args.config)
+    
+    # 命令行参数覆盖配置文件
+    if args.host:
+        config['carla_settings']['host'] = args.host
+    if args.port:
+        config['carla_settings']['port'] = args.port
+    if args.town:
+        config['carla_settings']['town'] = args.town
+    if args.save_path:
+        config['collection_settings']['save_path'] = args.save_path
+    if args.strategy:
+        config['route_generation']['strategy'] = args.strategy
+    if args.min_distance:
+        config['route_generation']['min_distance'] = args.min_distance
+    if args.max_distance:
+        config['route_generation']['max_distance'] = args.max_distance
+    if args.frames_per_route:
+        config['collection_settings']['frames_per_route'] = args.frames_per_route
+    if args.target_speed:
+        config['collection_settings']['target_speed_kmh'] = args.target_speed
+    if args.fps:
+        config['collection_settings']['simulation_fps'] = args.fps
+    if args.spawn_npc:
+        config['world_settings']['spawn_npc_vehicles'] = True
+    if args.num_npc:
+        config['world_settings']['num_npc_vehicles'] = args.num_npc
+    
     # 验证帧数（最少200帧）
-    if args.frames_per_route < 200:
-        print(f"⚠️  警告：每条路线帧数 ({args.frames_per_route}) 小于最小值 200")
+    frames_per_route = config['collection_settings']['frames_per_route']
+    if frames_per_route < 200:
+        print(f"⚠️  警告：每条路线帧数 ({frames_per_route}) 小于最小值 200")
         print(f"✅ 自动调整为 200 帧\n")
-        args.frames_per_route = 200
+        config['collection_settings']['frames_per_route'] = 200
+    
+    # 显示最终配置
+    print("\n" + "="*70)
+    print("📋 最终配置")
+    print("="*70)
+    print(f"CARLA服务器: {config['carla_settings']['host']}:{config['carla_settings']['port']}")
+    print(f"地图: {config['carla_settings']['town']}")
+    print(f"目标速度: {config['collection_settings']['target_speed_kmh']:.1f} km/h")
+    print(f"模拟帧率: {config['collection_settings']['simulation_fps']} FPS")
+    print(f"生成NPC车辆: {'是' if config['world_settings']['spawn_npc_vehicles'] else '否'}")
+    if config['world_settings']['spawn_npc_vehicles']:
+        print(f"NPC车辆数量: {config['world_settings']['num_npc_vehicles']}")
+    print(f"路线策略: {config['route_generation']['strategy']}")
+    print(f"保存路径: {config['collection_settings']['save_path']}")
+    print("="*70 + "\n")
     
     # 创建收集器
     collector = AutoFullTownCollector(
-        host=args.host,
-        port=args.port,
-        town=args.town,
-        ignore_traffic_lights=args.ignore_traffic_lights,
-        ignore_signs=args.ignore_signs,
-        ignore_vehicles_percentage=args.ignore_vehicles
+        host=config['carla_settings']['host'],
+        port=config['carla_settings']['port'],
+        town=config['carla_settings']['town'],
+        ignore_traffic_lights=config['traffic_rules']['ignore_traffic_lights'],
+        ignore_signs=config['traffic_rules']['ignore_signs'],
+        ignore_vehicles_percentage=config['traffic_rules']['ignore_vehicles_percentage'],
+        target_speed=config['collection_settings']['target_speed_kmh'],
+        simulation_fps=config['collection_settings']['simulation_fps'],
+        spawn_npc_vehicles=config['world_settings']['spawn_npc_vehicles'],
+        num_npc_vehicles=config['world_settings']['num_npc_vehicles']
     )
     
     # 设置参数
-    collector.min_distance = args.min_distance
-    collector.max_distance = args.max_distance
-    collector.frames_per_route = args.frames_per_route
+    collector.min_distance = config['route_generation']['min_distance']
+    collector.max_distance = config['route_generation']['max_distance']
+    collector.frames_per_route = config['collection_settings']['frames_per_route']
     
     # 运行收集
-    collector.run(save_path=args.save_path, strategy=args.strategy)
+    collector.run(
+        save_path=config['collection_settings']['save_path'], 
+        strategy=config['route_generation']['strategy']
+    )
 
 
 if __name__ == '__main__':

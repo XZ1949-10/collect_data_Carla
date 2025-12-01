@@ -22,6 +22,14 @@
         "_comment_ignore_vehicles_percentage": "忽略其他车辆的百分比（0-100），值越高越不避让其他车辆"
     },
     
+    "world_settings": {
+        "_comment": "世界环境配置",
+        "spawn_npc_vehicles": false,
+        "_comment_spawn_npc_vehicles": "是否生成NPC车辆（false=不生成，场景中只有数据收集车辆；true=生成其他车辆）",
+        "num_npc_vehicles": 0,
+        "_comment_num_npc_vehicles": "NPC车辆数量（仅在spawn_npc_vehicles=true时有效），推荐值：0-50"
+    },
+    
     "route_generation": {
         "_comment": "路线生成策略配置",
         "strategy": "smart",
@@ -40,7 +48,11 @@
         "save_path": "./auto_collected_data",
         "_comment_save_path": "数据保存路径，相对路径或绝对路径均可",
         "auto_save_interval": 200,
-        "_comment_auto_save_interval": "自动保存间隔（帧数），每收集N帧自动保存一次"
+        "_comment_auto_save_interval": "自动保存间隔（帧数），每收集N帧自动保存一次",
+        "simulation_fps": 20,
+        "_comment_simulation_fps": "模拟帧率（FPS），推荐值：10-30，值越高数据越密集但性能要求越高",
+        "target_speed_kmh": 20.0,
+        "_comment_target_speed_kmh": "车辆目标速度（km/h），推荐值：5-8，速度越低转弯越稳定（防止冲上马路牙子）"
     },
     
     "advanced_settings": {
