@@ -12,6 +12,7 @@ import glob
 import os
 import sys
 import time
+import random
 import numpy as np
 import json
 from datetime import datetime
@@ -46,7 +47,8 @@ class AutoFullTownCollector:
     def __init__(self, host='localhost', port=2000, town='Town01',
                  ignore_traffic_lights=True, ignore_signs=True,
                  ignore_vehicles_percentage=80, target_speed=10.0,
-                 simulation_fps=20, spawn_npc_vehicles=False, num_npc_vehicles=0):
+                 simulation_fps=20, spawn_npc_vehicles=False, num_npc_vehicles=0,
+                 spawn_npc_walkers=False, num_npc_walkers=0, weather_config=None):
         """
         初始化全自动收集器
         
@@ -61,6 +63,9 @@ class AutoFullTownCollector:
             simulation_fps (int): 模拟帧率
             spawn_npc_vehicles (bool): 是否生成NPC车辆
             num_npc_vehicles (int): NPC车辆数量
+            spawn_npc_walkers (bool): 是否生成NPC行人
+            num_npc_walkers (int): NPC行人数量
+            weather_config (dict): 天气配置
         """
         self.host = host
         self.port = port
@@ -76,6 +81,9 @@ class AutoFullTownCollector:
         self.simulation_fps = simulation_fps
         self.spawn_npc_vehicles = spawn_npc_vehicles
         self.num_npc_vehicles = num_npc_vehicles
+        self.spawn_npc_walkers = spawn_npc_walkers
+        self.num_npc_walkers = num_npc_walkers
+        self.weather_config = weather_config or {}
         
         # CARLA对象
         self.client = None
@@ -83,6 +91,8 @@ class AutoFullTownCollector:
         self.spawn_points = []
         self.route_planner = None
         self.npc_vehicles = []  # 存储NPC车辆列表
+        self.npc_walkers = []   # 存储NPC行人列表
+        self.walker_controllers = []  # 存储行人控制器列表
         
         # 数据收集器
         self.collector = None
@@ -138,10 +148,20 @@ class AutoFullTownCollector:
         print(f"    • 生成NPC车辆: {'✅ 是' if self.spawn_npc_vehicles else '❌ 否'}")
         if self.spawn_npc_vehicles:
             print(f"    • NPC车辆数量: {self.num_npc_vehicles}")
+        print(f"    • 生成NPC行人: {'✅ 是' if self.spawn_npc_walkers else '❌ 否'}")
+        if self.spawn_npc_walkers:
+            print(f"    • NPC行人数量: {self.num_npc_walkers}")
+        
+        # 设置天气
+        self._set_weather()
         
         # 生成NPC车辆（如果配置启用）
         if self.spawn_npc_vehicles and self.num_npc_vehicles > 0:
             self._spawn_npc_vehicles()
+        
+        # 生成NPC行人（如果配置启用）
+        if self.spawn_npc_walkers and self.num_npc_walkers > 0:
+            self._spawn_npc_walkers()
         
         # 初始化路径规划器
         if AGENTS_AVAILABLE:
@@ -257,6 +277,165 @@ class AutoFullTownCollector:
         dx = loc2.x - loc1.x
         dy = loc2.y - loc1.y
         return np.sqrt(dx**2 + dy**2)
+    
+    def _set_weather(self):
+        """设置天气"""
+        if not self.weather_config:
+            print(f"  天气: 默认（未配置）")
+            return
+        
+        preset = self.weather_config.get('preset')
+        
+        # 天气预设映射
+        weather_presets = {
+            'ClearNoon': carla.WeatherParameters.ClearNoon,
+            'CloudyNoon': carla.WeatherParameters.CloudyNoon,
+            'WetNoon': carla.WeatherParameters.WetNoon,
+            'WetCloudyNoon': carla.WeatherParameters.WetCloudyNoon,
+            'SoftRainNoon': carla.WeatherParameters.SoftRainNoon,
+            'MidRainyNoon': carla.WeatherParameters.MidRainyNoon,
+            'HardRainNoon': carla.WeatherParameters.HardRainNoon,
+            'ClearSunset': carla.WeatherParameters.ClearSunset,
+            'CloudySunset': carla.WeatherParameters.CloudySunset,
+            'WetSunset': carla.WeatherParameters.WetSunset,
+            'WetCloudySunset': carla.WeatherParameters.WetCloudySunset,
+            'SoftRainSunset': carla.WeatherParameters.SoftRainSunset,
+            'MidRainSunset': carla.WeatherParameters.MidRainSunset,
+            'HardRainSunset': carla.WeatherParameters.HardRainSunset,
+            'ClearNight': carla.WeatherParameters.ClearNight,
+            'CloudyNight': carla.WeatherParameters.CloudyNight,
+            'WetNight': carla.WeatherParameters.WetNight,
+            'WetCloudyNight': carla.WeatherParameters.WetCloudyNight,
+            'SoftRainNight': carla.WeatherParameters.SoftRainNight,
+            'MidRainyNight': carla.WeatherParameters.MidRainyNight,
+            'HardRainNight': carla.WeatherParameters.HardRainNight,
+            'DustStorm': carla.WeatherParameters.DustStorm,
+        }
+        
+        try:
+            if preset and preset in weather_presets:
+                # 使用预设天气
+                self.world.set_weather(weather_presets[preset])
+                print(f"  天气: {preset} (预设)")
+            elif preset is None or preset == 'null' or preset == '':
+                # 使用自定义天气参数
+                custom = self.weather_config.get('custom', {})
+                weather = carla.WeatherParameters(
+                    cloudiness=custom.get('cloudiness', 0.0),
+                    precipitation=custom.get('precipitation', 0.0),
+                    precipitation_deposits=custom.get('precipitation_deposits', 0.0),
+                    wind_intensity=custom.get('wind_intensity', 0.0),
+                    sun_azimuth_angle=custom.get('sun_azimuth_angle', 0.0),
+                    sun_altitude_angle=custom.get('sun_altitude_angle', 75.0),
+                    fog_density=custom.get('fog_density', 0.0),
+                    fog_distance=custom.get('fog_distance', 0.0),
+                    wetness=custom.get('wetness', 0.0)
+                )
+                self.world.set_weather(weather)
+                print(f"  天气: 自定义参数")
+                print(f"    • 云量: {custom.get('cloudiness', 0.0)}%")
+                print(f"    • 降水: {custom.get('precipitation', 0.0)}%")
+                print(f"    • 太阳高度: {custom.get('sun_altitude_angle', 75.0)}°")
+            else:
+                print(f"  ⚠️  未知天气预设: {preset}，使用默认天气")
+        except Exception as e:
+            print(f"  ⚠️  设置天气失败: {e}")
+    
+    def _spawn_npc_walkers(self):
+        """生成NPC行人"""
+        print(f"\n🚶 正在生成 {self.num_npc_walkers} 个NPC行人...")
+        
+        try:
+            # 获取行人蓝图
+            walker_blueprints = self.world.get_blueprint_library().filter('walker.pedestrian.*')
+            
+            # 获取行人生成点
+            spawn_points = []
+            for _ in range(self.num_npc_walkers):
+                spawn_point = carla.Transform()
+                loc = self.world.get_random_location_from_navigation()
+                if loc is not None:
+                    spawn_point.location = loc
+                    spawn_points.append(spawn_point)
+            
+            # 批量生成行人
+            batch = []
+            for spawn_point in spawn_points:
+                walker_bp = random.choice(walker_blueprints)
+                # 设置行人为不可碰撞（避免阻挡数据收集车辆）
+                if walker_bp.has_attribute('is_invincible'):
+                    walker_bp.set_attribute('is_invincible', 'false')
+                batch.append(carla.command.SpawnActor(walker_bp, spawn_point))
+            
+            # 执行批量生成
+            results = self.client.apply_batch_sync(batch, True)
+            walkers_list = []
+            for i, result in enumerate(results):
+                if not result.error:
+                    walkers_list.append(result.actor_id)
+            
+            # 生成行人控制器
+            walker_controller_bp = self.world.get_blueprint_library().find('controller.ai.walker')
+            batch = []
+            for walker_id in walkers_list:
+                batch.append(carla.command.SpawnActor(walker_controller_bp, carla.Transform(), walker_id))
+            
+            results = self.client.apply_batch_sync(batch, True)
+            for i, result in enumerate(results):
+                if not result.error:
+                    self.walker_controllers.append(result.actor_id)
+            
+            # 获取所有行人actor
+            all_actors = self.world.get_actors(walkers_list)
+            for actor in all_actors:
+                self.npc_walkers.append(actor)
+            
+            # 启动行人AI
+            self.world.tick()  # 确保控制器已生成
+            controller_actors = self.world.get_actors(self.walker_controllers)
+            for controller in controller_actors:
+                # 设置行人目标点和速度
+                controller.start()
+                controller.go_to_location(self.world.get_random_location_from_navigation())
+                controller.set_max_speed(1.0 + random.random())  # 1-2 m/s
+            
+            print(f"✅ 成功生成 {len(self.npc_walkers)} 个NPC行人")
+            
+        except Exception as e:
+            print(f"⚠️  生成NPC行人时出错: {e}")
+    
+    def _cleanup_npc_walkers(self):
+        """清理NPC行人"""
+        if self.npc_walkers or self.walker_controllers:
+            print(f"\n🧹 正在清理NPC行人...")
+            
+            # 先停止控制器
+            controller_actors = self.world.get_actors(self.walker_controllers)
+            for controller in controller_actors:
+                try:
+                    controller.stop()
+                except:
+                    pass
+            
+            # 销毁控制器
+            for controller_id in self.walker_controllers:
+                try:
+                    actor = self.world.get_actor(controller_id)
+                    if actor:
+                        actor.destroy()
+                except:
+                    pass
+            
+            # 销毁行人
+            for walker in self.npc_walkers:
+                try:
+                    walker.destroy()
+                except:
+                    pass
+            
+            self.npc_walkers = []
+            self.walker_controllers = []
+            print("✅ NPC行人清理完成")
     
     def _spawn_npc_vehicles(self):
         """生成NPC车辆"""
@@ -696,8 +875,9 @@ class AutoFullTownCollector:
             import traceback
             traceback.print_exc()
         finally:
-            # 清理NPC车辆
+            # 清理NPC车辆和行人
             self._cleanup_npc_vehicles()
+            self._cleanup_npc_walkers()
             
             # 恢复异步模式
             if self.world is not None:
@@ -776,7 +956,23 @@ def load_config(config_path='auto_collection_config.json'):
         },
         'world_settings': {
             'spawn_npc_vehicles': False,
-            'num_npc_vehicles': 0
+            'num_npc_vehicles': 0,
+            'spawn_npc_walkers': False,
+            'num_npc_walkers': 0
+        },
+        'weather_settings': {
+            'preset': 'ClearNoon',
+            'custom': {
+                'cloudiness': 0.0,
+                'precipitation': 0.0,
+                'precipitation_deposits': 0.0,
+                'wind_intensity': 0.0,
+                'sun_azimuth_angle': 0.0,
+                'sun_altitude_angle': 75.0,
+                'fog_density': 0.0,
+                'fog_distance': 0.0,
+                'wetness': 0.0
+            }
         },
         'route_generation': {
             'strategy': 'smart',
@@ -840,6 +1036,9 @@ def main():
     parser.add_argument('--fps', type=int, help='模拟帧率（覆盖配置文件）')
     parser.add_argument('--spawn-npc', action='store_true', help='生成NPC车辆（覆盖配置文件）')
     parser.add_argument('--num-npc', type=int, help='NPC车辆数量（覆盖配置文件）')
+    parser.add_argument('--spawn-walkers', action='store_true', help='生成NPC行人（覆盖配置文件）')
+    parser.add_argument('--num-walkers', type=int, help='NPC行人数量（覆盖配置文件）')
+    parser.add_argument('--weather', type=str, help='天气预设名称（覆盖配置文件）')
     
     args = parser.parse_args()
     
@@ -871,6 +1070,12 @@ def main():
         config['world_settings']['spawn_npc_vehicles'] = True
     if args.num_npc:
         config['world_settings']['num_npc_vehicles'] = args.num_npc
+    if args.spawn_walkers:
+        config['world_settings']['spawn_npc_walkers'] = True
+    if args.num_walkers:
+        config['world_settings']['num_npc_walkers'] = args.num_walkers
+    if args.weather:
+        config['weather_settings']['preset'] = args.weather
     
     # 验证帧数（最少200帧）
     frames_per_route = config['collection_settings']['frames_per_route']
@@ -890,6 +1095,10 @@ def main():
     print(f"生成NPC车辆: {'是' if config['world_settings']['spawn_npc_vehicles'] else '否'}")
     if config['world_settings']['spawn_npc_vehicles']:
         print(f"NPC车辆数量: {config['world_settings']['num_npc_vehicles']}")
+    print(f"生成NPC行人: {'是' if config['world_settings']['spawn_npc_walkers'] else '否'}")
+    if config['world_settings']['spawn_npc_walkers']:
+        print(f"NPC行人数量: {config['world_settings']['num_npc_walkers']}")
+    print(f"天气: {config['weather_settings'].get('preset', '自定义')}")
     print(f"路线策略: {config['route_generation']['strategy']}")
     print(f"保存路径: {config['collection_settings']['save_path']}")
     print("="*70 + "\n")
@@ -905,7 +1114,10 @@ def main():
         target_speed=config['collection_settings']['target_speed_kmh'],
         simulation_fps=config['collection_settings']['simulation_fps'],
         spawn_npc_vehicles=config['world_settings']['spawn_npc_vehicles'],
-        num_npc_vehicles=config['world_settings']['num_npc_vehicles']
+        num_npc_vehicles=config['world_settings']['num_npc_vehicles'],
+        spawn_npc_walkers=config['world_settings']['spawn_npc_walkers'],
+        num_npc_walkers=config['world_settings']['num_npc_walkers'],
+        weather_config=config.get('weather_settings', {})
     )
     
     # 设置参数

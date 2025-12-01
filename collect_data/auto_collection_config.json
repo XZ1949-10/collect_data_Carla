@@ -18,7 +18,7 @@
         "_comment_ignore_traffic_lights": "是否忽略红绿灯（true=忽略，车辆不会在红灯前停车）",
         "ignore_signs": true,
         "_comment_ignore_signs": "是否忽略停车标志（true=忽略，车辆不会在STOP标志前停车）",
-        "ignore_vehicles_percentage": 80,
+        "ignore_vehicles_percentage": 0,
         "_comment_ignore_vehicles_percentage": "忽略其他车辆的百分比（0-100），值越高越不避让其他车辆"
     },
     
@@ -27,7 +27,38 @@
         "spawn_npc_vehicles": false,
         "_comment_spawn_npc_vehicles": "是否生成NPC车辆（false=不生成，场景中只有数据收集车辆；true=生成其他车辆）",
         "num_npc_vehicles": 0,
-        "_comment_num_npc_vehicles": "NPC车辆数量（仅在spawn_npc_vehicles=true时有效），推荐值：0-50"
+        "_comment_num_npc_vehicles": "NPC车辆数量（仅在spawn_npc_vehicles=true时有效），推荐值：0-50",
+        "spawn_npc_walkers": false,
+        "_comment_spawn_npc_walkers": "是否生成NPC行人（false=不生成；true=生成行人）",
+        "num_npc_walkers": 0,
+        "_comment_num_npc_walkers": "NPC行人数量（仅在spawn_npc_walkers=true时有效），推荐值：0-100"
+    },
+    
+    "weather_settings": {
+        "_comment": "天气配置 - 所有值范围0.0-100.0（百分比）",
+        "preset": "CloudyNoon",
+        "_comment_preset": "天气预设：ClearNoon, CloudyNoon, WetNoon, WetCloudyNoon, SoftRainNoon, MidRainyNoon, HardRainNoon, ClearSunset, CloudySunset, WetSunset, WetCloudySunset, SoftRainSunset, MidRainSunset, HardRainSunset, ClearNight, CloudyNight, WetNight, WetCloudyNight, SoftRainNight, MidRainyNight, HardRainNight, DustStorm（设为null使用自定义参数）",
+        "custom": {
+            "_comment": "自定义天气参数（仅当preset=null时生效）",
+            "cloudiness": 0.0,
+            "_comment_cloudiness": "云量 0-100",
+            "precipitation": 0.0,
+            "_comment_precipitation": "降水量 0-100",
+            "precipitation_deposits": 0.0,
+            "_comment_precipitation_deposits": "地面积水 0-100",
+            "wind_intensity": 0.0,
+            "_comment_wind_intensity": "风力强度 0-100",
+            "sun_azimuth_angle": 0.0,
+            "_comment_sun_azimuth_angle": "太阳方位角 0-360",
+            "sun_altitude_angle": 75.0,
+            "_comment_sun_altitude_angle": "太阳高度角 -90到90（负值=夜晚）",
+            "fog_density": 0.0,
+            "_comment_fog_density": "雾密度 0-100",
+            "fog_distance": 0.0,
+            "_comment_fog_distance": "雾起始距离（米）",
+            "wetness": 0.0,
+            "_comment_wetness": "地面湿度 0-100"
+        }
     },
     
     "route_generation": {
