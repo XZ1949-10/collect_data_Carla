@@ -515,14 +515,18 @@ class InteractiveDataCollector:
         # 交互式模式下强制启用可视化
         visualize = True
         
-        # 创建基于命令的数据收集器
+        # 获取LocalPlanner的target_speed配置
+        target_speed = 10.0  # 使用下面opt_dict中的速度
+        
+        # 创建基于命令的数据收集器（传递target_speed）
         self.collector = CommandBasedDataCollector(
             host=self.host,
             port=self.port,
             town=self.town,
             ignore_traffic_lights=self.ignore_traffic_lights,
             ignore_signs=self.ignore_signs,
-            ignore_vehicles_percentage=self.ignore_vehicles_percentage
+            ignore_vehicles_percentage=self.ignore_vehicles_percentage,
+            target_speed=target_speed  # ⭐ 传递速度参数
         )
         
         # 复用已有的连接
@@ -564,8 +568,8 @@ class InteractiveDataCollector:
             
             # 创建局部规划器配置
             opt_dict = {
-                'target_speed': 20.0,      # 目标速度 (km/h)
-                'sampling_radius': 1.0,     # 采样半径 (米)
+                'target_speed': 10.0,      # 目标速度 (km/h)
+                'sampling_radius': 2.0,     # 采样半径 (米)
                 'offset': 0.0               # 车道偏移 (米)
             }
             

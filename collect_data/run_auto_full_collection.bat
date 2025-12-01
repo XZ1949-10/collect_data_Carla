@@ -52,7 +52,7 @@ echo   * 预计耗时: ~5小时
 echo ========================================
 echo.
 pause
-python auto_full_town_collection.py --strategy smart --min-distance 50 --max-distance 500 --frames-per-route 1000
+python auto_full_town_collection.py --strategy smart --min-distance 80 --max-distance 800 --frames-per-route 2000
 goto end
 
 :quick_test
@@ -98,8 +98,6 @@ echo ========================================
 echo [自定义配置]
 echo ========================================
 echo.
-echo [提示] 每条路线最少需要200帧数据
-echo.
 set /p min_dist="最小距离（米，默认50）: "
 set /p max_dist="最大距离（米，默认500）: "
 set /p frames="每条路线帧数（默认1000）: "
@@ -109,16 +107,6 @@ if "%min_dist%"=="" set min_dist=50
 if "%max_dist%"=="" set max_dist=500
 if "%frames%"=="" set frames=1000
 if "%strategy%"=="" set strategy=smart
-
-REM 检查帧数是否小于200
-if %frames% LSS 200 (
-    echo.
-    echo [错误] 帧数不能小于200！
-    echo [自动调整] 将帧数设置为200
-    set frames=200
-    echo.
-    pause
-)
 
 echo.
 echo 配置确认：

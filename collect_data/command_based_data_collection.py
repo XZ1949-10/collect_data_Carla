@@ -61,13 +61,14 @@ class CommandBasedDataCollector:
     
     def __init__(self, host='localhost', port=2000, town='Town01',
                  ignore_traffic_lights=True, ignore_signs=True, 
-                 ignore_vehicles_percentage=80):
+                 ignore_vehicles_percentage=80, target_speed=20.0):
         """初始化
         
         参数:
             ignore_traffic_lights: 是否忽略红绿灯
             ignore_signs: 是否忽略停车标志
             ignore_vehicles_percentage: 忽略其他车辆的百分比（0-100）
+            target_speed: 目标速度（km/h），默认20
         """
         self.host = host
         self.port = port
@@ -77,6 +78,7 @@ class CommandBasedDataCollector:
         self.ignore_traffic_lights = ignore_traffic_lights
         self.ignore_signs = ignore_signs
         self.ignore_vehicles_percentage = ignore_vehicles_percentage
+        self.target_speed = target_speed  # 添加目标速度配置
         
         # Carla对象
         self.client = None
@@ -175,7 +177,7 @@ class CommandBasedDataCollector:
             
             # 创建 BasicAgent 配置
             opt_dict = {
-                'target_speed': 30.0,
+                'target_speed': self.target_speed,  # 使用可配置的速度
                 'ignore_traffic_lights': self.ignore_traffic_lights,
                 'ignore_stop_signs': self.ignore_signs,
                 'ignore_vehicles': (self.ignore_vehicles_percentage > 50),
@@ -185,7 +187,7 @@ class CommandBasedDataCollector:
             # 创建 BasicAgent
             self.agent = BasicAgent(
                 self.vehicle, 
-                target_speed=30,
+                target_speed=self.target_speed,  # 使用可配置的速度
                 opt_dict=opt_dict,
                 map_inst=self.world.get_map()
             )
