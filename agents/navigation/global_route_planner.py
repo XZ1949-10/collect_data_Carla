@@ -263,43 +263,15 @@ class GlobalRoutePlanner:
         """
         This method places zero cost links in the topology graph
         representing availability of lane changes.
+        
+        修改说明（2025-12-01）：
+        - 完全禁用变道功能
+        - 只保留4种命令：LANEFOLLOW(2), LEFT(3), RIGHT(4), STRAIGHT(5)
+        - 这样可以确保数据收集时命令与训练数据一致
         """
-
-        for segment in self._topology:
-            left_found, right_found = False, False
-
-            for waypoint in segment['path']:
-                if not segment['entry'].is_junction:
-                    next_waypoint, next_road_option, next_segment = None, None, None
-
-                    if waypoint.right_lane_marking and waypoint.right_lane_marking.lane_change & carla.LaneChange.Right and not right_found:
-                        next_waypoint = waypoint.get_right_lane()
-                        if next_waypoint is not None \
-                                and next_waypoint.lane_type == carla.LaneType.Driving \
-                                and waypoint.road_id == next_waypoint.road_id:
-                            next_road_option = RoadOption.CHANGELANERIGHT
-                            next_segment = self._localize(next_waypoint.transform.location)
-                            if next_segment is not None:
-                                self._graph.add_edge(
-                                    self._id_map[segment['entryxyz']], next_segment[0], entry_waypoint=waypoint,
-                                    exit_waypoint=next_waypoint, intersection=False, exit_vector=None,
-                                    path=[], length=0, type=next_road_option, change_waypoint=next_waypoint)
-                                right_found = True
-                    if waypoint.left_lane_marking and waypoint.left_lane_marking.lane_change & carla.LaneChange.Left and not left_found:
-                        next_waypoint = waypoint.get_left_lane()
-                        if next_waypoint is not None \
-                                and next_waypoint.lane_type == carla.LaneType.Driving \
-                                and waypoint.road_id == next_waypoint.road_id:
-                            next_road_option = RoadOption.CHANGELANELEFT
-                            next_segment = self._localize(next_waypoint.transform.location)
-                            if next_segment is not None:
-                                self._graph.add_edge(
-                                    self._id_map[segment['entryxyz']], next_segment[0], entry_waypoint=waypoint,
-                                    exit_waypoint=next_waypoint, intersection=False, exit_vector=None,
-                                    path=[], length=0, type=next_road_option, change_waypoint=next_waypoint)
-                                left_found = True
-                if left_found and right_found:
-                    break
+        # 完全禁用变道，直接返回
+        # 这样路径规划只会产生：LANEFOLLOW, LEFT, RIGHT, STRAIGHT
+        pass
 
     def _localize(self, location):
         # type: (carla.Location) -> None | tuple[int, int]

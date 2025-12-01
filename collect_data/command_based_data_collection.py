@@ -795,8 +795,10 @@ class CommandBasedDataCollector:
         """
         从 BasicAgent 的 local_planner 获取当前导航命令
         
-        改进：使用 get_incoming_waypoint_and_direction() 获取前方路点的方向，
-        而不是当前目标路点的方向。这样可以更准确地反映即将执行的动作。
+        改进：
+        1. 使用 get_incoming_waypoint_and_direction() 获取前方路点的方向
+        2. 如果检测到变道命令(CHANGELANELEFT/CHANGELANERIGHT)，继续向前查找
+           是否有真正的转弯命令(LEFT/RIGHT/STRAIGHT)，避免转弯时显示为Follow
         
         返回:
             float: 命令数值 (2.0=Follow, 3.0=Left, 4.0=Right, 5.0=Straight, 0.0=VOID)
@@ -811,17 +813,46 @@ class CommandBasedDataCollector:
             if local_planner is None:
                 return 2.0
             
-            # 优先使用前方路点的方向（更准确地反映即将执行的动作）
-            # steps=3 表示前瞻3个路点
-            incoming_wp, incoming_direction = local_planner.get_incoming_waypoint_and_direction(steps=3)
+            # 获取路点队列
+            waypoints_queue = local_planner.get_plan()
+            if waypoints_queue is None or len(waypoints_queue) == 0:
+                return 2.0
             
-            if incoming_direction is not None and incoming_direction != RoadOption.VOID:
-                road_option = incoming_direction
-            else:
-                # 降级：使用当前目标路点的方向
-                road_option = local_planner.target_road_option
-                if road_option is None:
-                    road_option = RoadOption.LANEFOLLOW
+            # 向前查找有意义的命令（跳过LANEFOLLOW和变道命令）
+            # 优先查找转弯命令(LEFT/RIGHT/STRAIGHT)
+            road_option = None
+            
+            # 搜索范围：前10个路点
+            search_range = min(10, len(waypoints_queue))
+            
+            for i in range(search_range):
+                _, direction = waypoints_queue[i]
+                
+                # 如果找到转弯命令，立即返回
+                if direction in [RoadOption.LEFT, RoadOption.RIGHT, RoadOption.STRAIGHT]:
+                    road_option = direction
+                    break
+                
+                # 如果是变道命令，继续查找（不要立即返回Follow）
+                if direction in [RoadOption.CHANGELANELEFT, RoadOption.CHANGELANERIGHT]:
+                    continue
+                
+                # 如果是LANEFOLLOW，继续查找
+                if direction == RoadOption.LANEFOLLOW:
+                    continue
+            
+            # 如果没有找到转弯命令，使用第一个非VOID的命令
+            if road_option is None:
+                # 使用 steps=3 的前瞻
+                incoming_wp, incoming_direction = local_planner.get_incoming_waypoint_and_direction(steps=3)
+                
+                if incoming_direction is not None and incoming_direction != RoadOption.VOID:
+                    road_option = incoming_direction
+                else:
+                    # 降级：使用当前目标路点的方向
+                    road_option = local_planner.target_road_option
+                    if road_option is None:
+                        road_option = RoadOption.LANEFOLLOW
             
             # 映射到数值命令
             command = self.road_option_to_command.get(road_option, 2.0)
