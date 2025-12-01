@@ -49,7 +49,7 @@ class PostProcessor:
         self.avoid_stopping_min_speed = 2.0   # 当前速度阈值 (km/h)
         self.avoid_stopping_pred_speed = 3.0  # 预测速度阈值 (km/h)
         self.avoid_stopping_target_speed = 5.6 # 目标启动速度 (km/h)
-        self.turning_steer_scale = 1.5
+        self.turning_steer_scale = 2.0
         self.speed_normalization = SPEED_NORMALIZATION_MPS  # 使用配置文件中的值
     
     def process(self, steer, throttle, brake, speed_normalized, pred_speed_normalized=None):

@@ -1,0 +1,65 @@
+{
+    "_comment_file": "全自动Town01数据收集器配置文件",
+    "_comment_usage": "修改此文件可以自定义收集参数，无需修改代码",
+    
+    "carla_settings": {
+        "_comment": "CARLA服务器连接设置",
+        "host": "localhost",
+        "_comment_host": "CARLA服务器地址，本地运行使用localhost",
+        "port": 2000,
+        "_comment_port": "CARLA服务器端口，默认2000",
+        "town": "Town01",
+        "_comment_town": "地图名称，可选：Town01-Town10"
+    },
+    
+    "traffic_rules": {
+        "_comment": "交通规则配置，控制车辆行为",
+        "ignore_traffic_lights": true,
+        "_comment_ignore_traffic_lights": "是否忽略红绿灯（true=忽略，车辆不会在红灯前停车）",
+        "ignore_signs": true,
+        "_comment_ignore_signs": "是否忽略停车标志（true=忽略，车辆不会在STOP标志前停车）",
+        "ignore_vehicles_percentage": 80,
+        "_comment_ignore_vehicles_percentage": "忽略其他车辆的百分比（0-100），值越高越不避让其他车辆"
+    },
+    
+    "route_generation": {
+        "_comment": "路线生成策略配置",
+        "strategy": "smart",
+        "_comment_strategy": "路线生成策略：smart=智能选择（约150条路线），exhaustive=穷举所有（约5000条路线）",
+        "min_distance": 50.0,
+        "_comment_min_distance": "最小路线距离（米），过短的路线会被过滤",
+        "max_distance": 500.0,
+        "_comment_max_distance": "最大路线距离（米），过长的路线会被过滤",
+        "description": "smart=智能选择路线（推荐），exhaustive=穷举所有组合（数量巨大）"
+    },
+    
+    "collection_settings": {
+        "_comment": "数据收集参数配置",
+        "frames_per_route": 1000,
+        "_comment_frames_per_route": "每条路线收集的最大帧数，实际可能因到达终点而提前结束",
+        "save_path": "./auto_collected_data",
+        "_comment_save_path": "数据保存路径，相对路径或绝对路径均可",
+        "auto_save_interval": 200,
+        "_comment_auto_save_interval": "自动保存间隔（帧数），每收集N帧自动保存一次"
+    },
+    
+    "advanced_settings": {
+        "_comment": "高级设置，一般不需要修改",
+        "enable_route_validation": true,
+        "_comment_enable_route_validation": "是否启用路线验证（true=验证路线可达性，false=跳过验证）",
+        "retry_failed_routes": false,
+        "_comment_retry_failed_routes": "是否重试失败的路线（true=重试，false=跳过）",
+        "max_retries": 3,
+        "_comment_max_retries": "最大重试次数（仅在retry_failed_routes=true时有效）",
+        "pause_between_routes": 2,
+        "_comment_pause_between_routes": "路线之间的暂停时间（秒），用于清理资源"
+    },
+    
+    "_comment_tips": "使用建议",
+    "_tips": [
+        "快速测试：frames_per_route=200, min_distance=100, max_distance=300",
+        "标准收集：frames_per_route=1000, min_distance=50, max_distance=500",
+        "完整收集：strategy=exhaustive（需要很长时间！）",
+        "磁盘空间：每1000帧约50MB，请确保有足够空间"
+    ]
+}

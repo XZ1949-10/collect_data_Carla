@@ -31,7 +31,6 @@ from carla_image_processor import ImageProcessor
 from carla_vehicle_controller import VehicleController
 from carla_model_predictor import ModelPredictor
 from carla_vehicle_spawner import VehicleSpawner
-from carla_logger import CarlaLogger
 
 
 class CarlaInference:
@@ -104,10 +103,11 @@ class CarlaInference:
         self.sensor_manager = None
         self.navigation_planner = None
         self.visualizer = CarlaVisualizer()
-        self.logger = CarlaLogger()
         
         # 状态
         self.current_command = 2  # 默认命令：2=跟车
+        self.frame_count = 0
+        self.total_inference_time = 0.0
         
         print(f"初始化推理器 - 设备: {self.device}")
         
@@ -188,13 +188,12 @@ class CarlaInference:
         self.sensor_manager.clear_collision_history()
         
         # 设置目的地
-        if not self._setup_destination(destination_index):
-            raise RuntimeError("未能设置有效终点，停止运行")
+        self._setup_destination(destination_index)
         
         return True
     
     def _setup_destination(self, destination_index):
-        """设置目的地，返回是否成功"""
+        """设置目的地"""
         print("\n正在规划路线...")
         spawn_points = self.world.get_map().get_spawn_points()
         
@@ -202,12 +201,12 @@ class CarlaInference:
             destination = spawn_points[destination_index].location
             print(f"使用指定终点索引: {destination_index}")
             if not self.navigation_planner.set_destination(self.vehicle, destination):
-                print("⚠️ 警告：无法规划到指定终点，停止运行")
-                return False
-            return True
+                print("⚠️ 警告：无法规划到指定终点，将使用随机目的地")
+                self.navigation_planner.set_random_destination(self.vehicle)
         else:
-            print("⚠️ 未提供有效终点索引，停止运行")
-            return False
+            print("使用随机终点")
+            if not self.navigation_planner.set_random_destination(self.vehicle):
+                print("⚠️ 警告：无法规划路线，将使用默认命令（跟车）")
         print()
         
     def setup_sensors(self):
@@ -230,7 +229,7 @@ class CarlaInference:
         print(f"运行时长: {'无限' if duration < 0 else f'{duration}秒'}")
         print(f"可视化: {'开启' if visualize else '关闭'}")
         print(f"自动重新规划: {'开启' if auto_replan else '关闭'}")
-        print(f"模型输出: 后处理：{'开启' if self.enable_post_processing else '关闭'}")
+        print("模型输出: 直接控制（无后处理）")
         print(f"{'='*60}\n")
         
         # 等待摄像头数据
@@ -242,7 +241,7 @@ class CarlaInference:
         
         start_time = time.time()
         self.visualizer.set_start_time(start_time)
-        self.logger.set_start_time(start_time)
+        self.frame_count = 0
         
         try:
             while True:
@@ -261,7 +260,7 @@ class CarlaInference:
                 self.current_command = self.navigation_planner.get_navigation_command(self.vehicle)
                 
                 # 调试：打印命令信息
-                if self.logger.frame_count % PRINT_INTERVAL_FRAMES == 0:
+                if self.frame_count % PRINT_INTERVAL_FRAMES == 0:
                     route_info = self.navigation_planner.get_route_info(self.vehicle)
                     print(f"[DEBUG] Cmd: {self.current_command} "
                           f"({COMMAND_NAMES_EN.get(self.current_command, 'Unknown')}), "
@@ -297,11 +296,11 @@ class CarlaInference:
                 )
                 
                 # 累计推理时间
-                self.logger.add_inference_time(control_result['inference_time'])
+                self.total_inference_time += control_result['inference_time']
                 
-                # 调试：打印所有分支的预测值（包含后处理对比）
-                if self.logger.frame_count % PRINT_INTERVAL_FRAMES == 0:
-                    self.logger.debug_print_all_branches(self.model_predictor, self.current_command, control_result)
+                # 调试：打印所有分支的预测值
+                if self.frame_count % PRINT_INTERVAL_FRAMES == 0:
+                    self._debug_print_all_branches(control_result)
                 
                 # 应用控制
                 self.vehicle_controller.apply_control(
@@ -312,12 +311,11 @@ class CarlaInference:
                 )
                 
                 # 更新计数
-                self.logger.increment_frame()
+                self.frame_count += 1
                 
                 # 打印信息
-                if self.logger.frame_count % PRINT_INTERVAL_FRAMES == 0:
-                    route_info = self.navigation_planner.get_route_info(self.vehicle)
-                    self.logger.print_status(current_speed, control_result, route_info)
+                if self.frame_count % PRINT_INTERVAL_FRAMES == 0:
+                    self._print_status(start_time, current_speed, control_result)
                 
                 # 可视化
                 if visualize:
@@ -325,20 +323,80 @@ class CarlaInference:
                     self.visualizer.visualize(
                         current_image, 
                         control_result, 
-                        current_speed,
+                        current_speed, 
                         route_info,
-                        self.logger.frame_count
+                        self.frame_count
                     )
                     
         except KeyboardInterrupt:
             print("\n用户中断推理")
+            
         finally:
             if visualize:
                 self.visualizer.close()
+                
+    def _debug_print_all_branches(self, control_result):
+        """调试：打印所有分支的预测值"""
+        all_predictions = self.model_predictor.get_all_branch_predictions()
+        if all_predictions is None:
+            return
+            
+        print(f"\n{'='*70}")
+        print(f"[调试] 所有分支预测值 (帧 {self.frame_count})")
+        print(f"{'='*70}")
+        print(f"当前命令: {self.current_command} ({COMMAND_NAMES_EN.get(self.current_command, 'Unknown')})")
+        print(f"当前分支索引: {self.current_command - 2}")
+        print(f"\n{'分支':<12} {'命令':<10} {'Steer':<10} {'Throttle':<10} {'Brake':<10} {'使用?'}")
+        print(f"{'-'*70}")
+        
+        branch_names = ['Follow', 'Left', 'Right', 'Straight']
+        for i, name in enumerate(branch_names):
+            start_idx = i * 3
+            steer = all_predictions[start_idx]
+            throttle = all_predictions[start_idx + 1]
+            brake = all_predictions[start_idx + 2]
+            
+            is_current = '>>> YES' if (i == self.current_command - 2) else ''
+            
+            print(f"Branch {i:<4} {name:<10} {steer:+.3f}     {throttle:.3f}      {brake:.3f}      {is_current}")
+        
+        print(f"{'='*70}")
+        print(f"{'='*70}\n")
     
+    def _print_status(self, start_time, current_speed, control_result):
+        """打印状态信息"""
+        elapsed = time.time() - start_time
+        fps = self.frame_count / elapsed
+        
+        actual_speed = current_speed * SPEED_NORMALIZATION_MPS * 3.6
+        route_info = self.navigation_planner.get_route_info(self.vehicle)
+        command_en = COMMAND_NAMES_EN.get(route_info['current_command'], 'Unknown')
+        
+        print(f"[{elapsed:.1f}s] "
+              f"Cmd: {command_en:8s} | "
+              f"Prog: {route_info['progress']:5.1f}% | "
+              f"Dist: {route_info['remaining_distance']:4.0f}m | "
+              f"Spd: {actual_speed:4.1f} | "
+              f"Str: {control_result['steer']:+.3f} | "
+              f"Thr: {control_result['throttle']:.3f} | "
+              f"Brk: {control_result['brake']:.3f} | "
+              f"FPS: {fps:.1f}")
+              
     def print_statistics(self):
         """打印统计信息"""
-        self.logger.print_statistics(self.sensor_manager)
+        if self.frame_count == 0:
+            return
+            
+        print(f"\n{'='*60}")
+        print("推理统计信息")
+        print(f"{'='*60}")
+        print(f"总帧数: {self.frame_count}")
+        print(f"平均推理时间: {self.total_inference_time/self.frame_count*1000:.2f} ms")
+        print(f"碰撞次数: {len(self.sensor_manager.collision_history)}")
+        if self.sensor_manager.collision_history:
+            import numpy as np
+            print(f"平均碰撞强度: {np.mean(self.sensor_manager.collision_history):.2f}")
+        print(f"{'='*60}\n")
         
     def cleanup(self):
         """清理资源"""
@@ -413,7 +471,6 @@ def main():
                         help='启用模型输出后处理（启发式规则优化）')
     parser.add_argument('--image-crop', type=str2bool, default=True,
                         help='启用图像裁剪（去除天空和引擎盖，与训练一致）')
-
     
     args = parser.parse_args()
     
@@ -422,7 +479,6 @@ def main():
     if not os.path.isabs(args.model_path):
         args.model_path = os.path.join(script_dir, args.model_path)
     
-
     # 创建推理器
     inferencer = CarlaInference(
         model_path=args.model_path,

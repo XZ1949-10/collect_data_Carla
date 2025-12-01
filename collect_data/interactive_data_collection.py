@@ -564,8 +564,8 @@ class InteractiveDataCollector:
             
             # 创建局部规划器配置
             opt_dict = {
-                'target_speed': 30.0,      # 目标速度 (km/h)
-                'sampling_radius': 2.0,     # 采样半径 (米)
+                'target_speed': 20.0,      # 目标速度 (km/h)
+                'sampling_radius': 1.0,     # 采样半径 (米)
                 'offset': 0.0               # 车道偏移 (米)
             }
             
@@ -922,4 +922,3 @@ if __name__ == '__main__':
        ✅ 完美解决数据不平衡问题
     """
     main()
-

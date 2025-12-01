@@ -31,15 +31,11 @@ if sys.platform == 'win32':
         # 如果已经被重定向，跳过
         pass
 
-try:
-    sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
-        sys.version_info.major,
-        sys.version_info.minor,
-        'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
-except IndexError:
-    pass
 
 import carla
+
+# 添加父目录到 Python 路径，以便能导入 agents 模块
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 导入 agents 模块
 try:
@@ -924,4 +920,3 @@ if __name__ == '__main__':
         carla_cmd4_Right_20251103_143245_part001.h5      (Right命令，第1段)
     """
     main()
-
