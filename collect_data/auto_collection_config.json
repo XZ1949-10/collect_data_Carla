@@ -65,7 +65,7 @@
         "_comment": "路线生成策略配置",
         "strategy": "smart",
         "_comment_strategy": "路线生成策略：smart=智能选择（约150条路线），exhaustive=穷举所有（约5000条路线）",
-        "min_distance": 50.0,
+        "min_distance": 80.0,
         "_comment_min_distance": "最小路线距离（米），过短的路线会被过滤",
         "max_distance": 500.0,
         "_comment_max_distance": "最大路线距离（米），过长的路线会被过滤",
@@ -76,7 +76,7 @@
         "_comment": "数据收集参数配置",
         "frames_per_route": 1000,
         "_comment_frames_per_route": "每条路线收集的最大帧数，实际可能因到达终点而提前结束",
-        "save_path": "./auto_collected_data",
+        "save_path": "E://carla_data",
         "_comment_save_path": "数据保存路径，相对路径或绝对路径均可",
         "auto_save_interval": 200,
         "_comment_auto_save_interval": "自动保存间隔（帧数），每收集N帧自动保存一次",
@@ -84,6 +84,25 @@
         "_comment_simulation_fps": "模拟帧率（FPS），推荐值：10-30，值越高数据越密集但性能要求越高",
         "target_speed_kmh": 20.0,
         "_comment_target_speed_kmh": "车辆目标速度（km/h），推荐值：5-8，速度越低转弯越稳定（防止冲上马路牙子）"
+    },
+    
+    "multi_weather_settings": {
+        "_comment": "多天气轮换收集配置",
+        "enabled": true,
+        "_comment_enabled": "是否启用多天气轮换（true=启用，每个天气收集完后自动切换下一个）",
+        "weather_preset": "full",
+        "_comment_weather_preset": "天气组合预设：all_noon/all_sunset/all_night/clear_all/rain_all/basic/full",
+        "custom_weather_list": [],
+        "_comment_custom_weather_list": "自定义天气列表（优先于preset），如：[\"ClearNoon\", \"CloudyNoon\", \"WetNoon\"]",
+        "_available_presets": {
+            "all_noon": "所有正午天气（5种）",
+            "all_sunset": "所有日落天气（5种）",
+            "all_night": "所有夜晚天气（5种）",
+            "clear_all": "所有晴朗天气（3种）",
+            "rain_all": "所有雨天（5种）",
+            "basic": "基础组合（4种）：晴朗正午、多云正午、晴朗日落、晴朗夜晚",
+            "full": "完整组合（11种）：覆盖主要天气场景"
+        }
     },
     
     "advanced_settings": {

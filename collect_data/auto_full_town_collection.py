@@ -1016,6 +1016,121 @@ def load_config(config_path='auto_collection_config.json'):
         return default_config
 
 
+def run_multi_weather_collection(config, weather_list):
+    """
+    多天气轮换收集
+    
+    参数:
+        config (dict): 基础配置
+        weather_list (list): 天气预设列表
+    """
+    base_save_path = config['collection_settings']['save_path']
+    total_weathers = len(weather_list)
+    
+    print("\n" + "="*70)
+    print("🌤️  多天气轮换收集模式")
+    print("="*70)
+    print(f"天气列表: {weather_list}")
+    print(f"总天气数: {total_weathers}")
+    print("="*70 + "\n")
+    
+    all_stats = []
+    
+    for weather_idx, weather_preset in enumerate(weather_list):
+        print("\n" + "🌈"*35)
+        print(f"🌤️  天气 {weather_idx+1}/{total_weathers}: {weather_preset}")
+        print("🌈"*35 + "\n")
+        
+        # 更新天气配置
+        config['weather_settings']['preset'] = weather_preset
+        
+        # 为每个天气创建独立的保存目录
+        weather_save_path = os.path.join(base_save_path, weather_preset)
+        config['collection_settings']['save_path'] = weather_save_path
+        
+        # 创建收集器
+        collector = AutoFullTownCollector(
+            host=config['carla_settings']['host'],
+            port=config['carla_settings']['port'],
+            town=config['carla_settings']['town'],
+            ignore_traffic_lights=config['traffic_rules']['ignore_traffic_lights'],
+            ignore_signs=config['traffic_rules']['ignore_signs'],
+            ignore_vehicles_percentage=config['traffic_rules']['ignore_vehicles_percentage'],
+            target_speed=config['collection_settings']['target_speed_kmh'],
+            simulation_fps=config['collection_settings']['simulation_fps'],
+            spawn_npc_vehicles=config['world_settings']['spawn_npc_vehicles'],
+            num_npc_vehicles=config['world_settings']['num_npc_vehicles'],
+            spawn_npc_walkers=config['world_settings']['spawn_npc_walkers'],
+            num_npc_walkers=config['world_settings']['num_npc_walkers'],
+            weather_config=config.get('weather_settings', {})
+        )
+        
+        # 设置参数
+        collector.min_distance = config['route_generation']['min_distance']
+        collector.max_distance = config['route_generation']['max_distance']
+        collector.frames_per_route = config['collection_settings']['frames_per_route']
+        
+        # 运行收集
+        collector.run(
+            save_path=weather_save_path,
+            strategy=config['route_generation']['strategy']
+        )
+        
+        # 记录统计
+        all_stats.append({
+            'weather': weather_preset,
+            'routes_completed': collector.total_routes_completed,
+            'frames_collected': collector.total_frames_collected,
+            'save_path': weather_save_path
+        })
+        
+        print(f"\n✅ 天气 {weather_preset} 收集完成！")
+        print(f"   路线: {collector.total_routes_completed}, 帧数: {collector.total_frames_collected}")
+    
+    # 打印总体统计
+    print("\n" + "="*70)
+    print("📊 多天气收集完成 - 总体统计")
+    print("="*70)
+    total_routes = sum(s['routes_completed'] for s in all_stats)
+    total_frames = sum(s['frames_collected'] for s in all_stats)
+    print(f"总天气数: {total_weathers}")
+    print(f"总路线数: {total_routes}")
+    print(f"总帧数: {total_frames}")
+    print("\n各天气统计:")
+    for stat in all_stats:
+        print(f"  • {stat['weather']}: {stat['routes_completed']} 路线, {stat['frames_collected']} 帧")
+    print("="*70 + "\n")
+    
+    # 保存总体统计
+    summary_file = os.path.join(base_save_path, 'multi_weather_summary.json')
+    with open(summary_file, 'w', encoding='utf-8') as f:
+        json.dump({
+            'weather_list': weather_list,
+            'total_weathers': total_weathers,
+            'total_routes': total_routes,
+            'total_frames': total_frames,
+            'per_weather_stats': all_stats,
+            'timestamp': datetime.now().isoformat()
+        }, f, indent=4, ensure_ascii=False)
+    print(f"✅ 总体统计已保存到: {summary_file}")
+
+
+# 预定义的天气组合
+WEATHER_PRESETS = {
+    'all_noon': ['ClearNoon', 'CloudyNoon', 'WetNoon', 'SoftRainNoon', 'HardRainNoon'],
+    'all_sunset': ['ClearSunset', 'CloudySunset', 'WetSunset', 'SoftRainSunset', 'HardRainSunset'],
+    'all_night': ['ClearNight', 'CloudyNight', 'WetNight', 'SoftRainNight', 'HardRainNight'],
+    'clear_all': ['ClearNoon', 'ClearSunset', 'ClearNight'],
+    'rain_all': ['SoftRainNoon', 'MidRainyNoon', 'HardRainNoon', 'SoftRainSunset', 'SoftRainNight'],
+    'basic': ['ClearNoon', 'CloudyNoon', 'ClearSunset', 'ClearNight'],
+    'full': [
+        'ClearNoon', 'CloudyNoon', 'WetNoon', 'SoftRainNoon', 'HardRainNoon',
+        'ClearSunset', 'CloudySunset', 'SoftRainSunset',
+        'ClearNight', 'CloudyNight', 'SoftRainNight'
+    ]
+}
+
+
 def main():
     """主函数"""
     import argparse
@@ -1039,6 +1154,12 @@ def main():
     parser.add_argument('--spawn-walkers', action='store_true', help='生成NPC行人（覆盖配置文件）')
     parser.add_argument('--num-walkers', type=int, help='NPC行人数量（覆盖配置文件）')
     parser.add_argument('--weather', type=str, help='天气预设名称（覆盖配置文件）')
+    # 新增：多天气轮换参数
+    parser.add_argument('--multi-weather', type=str, 
+                       choices=['all_noon', 'all_sunset', 'all_night', 'clear_all', 'rain_all', 'basic', 'full'],
+                       help='多天气轮换模式：all_noon/all_sunset/all_night/clear_all/rain_all/basic/full')
+    parser.add_argument('--weather-list', type=str, nargs='+',
+                       help='自定义天气列表，如：ClearNoon CloudyNoon WetNoon')
     
     args = parser.parse_args()
     
@@ -1076,6 +1197,15 @@ def main():
         config['world_settings']['num_npc_walkers'] = args.num_walkers
     if args.weather:
         config['weather_settings']['preset'] = args.weather
+    
+    # 处理多天气轮换模式
+    weather_list = None
+    if args.multi_weather:
+        weather_list = WEATHER_PRESETS.get(args.multi_weather, [])
+        print(f"✅ 使用预定义天气组合: {args.multi_weather}")
+    elif args.weather_list:
+        weather_list = args.weather_list
+        print(f"✅ 使用自定义天气列表: {weather_list}")
     
     # 验证帧数（最少200帧）
     frames_per_route = config['collection_settings']['frames_per_route']
@@ -1120,16 +1250,22 @@ def main():
         weather_config=config.get('weather_settings', {})
     )
     
-    # 设置参数
-    collector.min_distance = config['route_generation']['min_distance']
-    collector.max_distance = config['route_generation']['max_distance']
-    collector.frames_per_route = config['collection_settings']['frames_per_route']
-    
-    # 运行收集
-    collector.run(
-        save_path=config['collection_settings']['save_path'], 
-        strategy=config['route_generation']['strategy']
-    )
+    # 根据是否有多天气列表决定运行模式
+    if weather_list and len(weather_list) > 0:
+        # 多天气轮换模式
+        run_multi_weather_collection(config, weather_list)
+    else:
+        # 单天气模式
+        # 设置参数
+        collector.min_distance = config['route_generation']['min_distance']
+        collector.max_distance = config['route_generation']['max_distance']
+        collector.frames_per_route = config['collection_settings']['frames_per_route']
+        
+        # 运行收集
+        collector.run(
+            save_path=config['collection_settings']['save_path'], 
+            strategy=config['route_generation']['strategy']
+        )
 
 
 if __name__ == '__main__':

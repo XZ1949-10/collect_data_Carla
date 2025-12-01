@@ -299,4 +299,59 @@ python auto_full_town_collection.py --target-speed 10 --weather CloudySunset --s
 
 ---
 
+## 🌤️ 多天气轮换收集（新功能）
+
+### 功能说明
+
+自动在多个天气条件下收集数据，每个天气收集完成后自动切换到下一个天气继续收集。数据按天气分目录保存。
+
+### 命令行使用
+
+```bash
+# 使用预定义天气组合
+python auto_full_town_collection.py --multi-weather basic
+
+# 使用自定义天气列表
+python auto_full_town_collection.py --weather-list ClearNoon CloudyNoon WetNoon
+```
+
+### 预定义天气组合
+
+| 组合名称 | 包含天气 | 说明 |
+|---------|---------|------|
+| `basic` | ClearNoon, CloudyNoon, ClearSunset, ClearNight | 基础组合（4种） |
+| `all_noon` | ClearNoon, CloudyNoon, WetNoon, SoftRainNoon, HardRainNoon | 所有正午天气（5种） |
+| `all_sunset` | ClearSunset, CloudySunset, WetSunset, SoftRainSunset, HardRainSunset | 所有日落天气（5种） |
+| `all_night` | ClearNight, CloudyNight, WetNight, SoftRainNight, HardRainNight | 所有夜晚天气（5种） |
+| `clear_all` | ClearNoon, ClearSunset, ClearNight | 所有晴朗天气（3种） |
+| `rain_all` | SoftRainNoon, MidRainyNoon, HardRainNoon, SoftRainSunset, SoftRainNight | 所有雨天（5种） |
+| `full` | 11种主要天气 | 完整组合 |
+
+### 数据保存结构
+
+```
+auto_collected_data/
+├── ClearNoon/
+│   ├── carla_cmd2_Follow_xxx.h5
+│   └── ...
+├── CloudyNoon/
+│   ├── carla_cmd2_Follow_xxx.h5
+│   └── ...
+├── WetNoon/
+│   └── ...
+└── multi_weather_summary.json  # 总体统计
+```
+
+### 配置文件设置
+
+```json
+"multi_weather_settings": {
+    "enabled": true,
+    "weather_preset": "basic",
+    "custom_weather_list": []
+}
+```
+
+---
+
 **更新日期**: 2025-12-01

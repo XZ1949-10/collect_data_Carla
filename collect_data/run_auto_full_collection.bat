@@ -22,15 +22,17 @@ echo   [1] 智能收集模式 - 平衡数据质量和收集效率（推荐）
 echo   [2] 快速测试 - 快速验证系统功能
 echo   [3] 穷举收集模式 - 收集所有可能路径（耗时长）
 echo   [4] 自定义参数
+echo   [5] 多天气轮换收集 - 自动切换天气收集数据（新功能）
 echo   [Q] 退出
 echo.
 
-set /p choice="请输入选项 [1-4/Q]: "
+set /p choice="请输入选项 [1-5/Q]: "
 
 if /i "%choice%"=="1" goto smart_mode
 if /i "%choice%"=="2" goto quick_test
 if /i "%choice%"=="3" goto exhaustive_mode
 if /i "%choice%"=="4" goto custom_mode
+if /i "%choice%"=="5" goto multi_weather_mode
 if /i "%choice%"=="Q" goto end
 if /i "%choice%"=="q" goto end
 
@@ -116,6 +118,78 @@ echo   * 每条路线: %frames%帧
 echo.
 pause
 python auto_full_town_collection.py --strategy %strategy% --min-distance %min_dist% --max-distance %max_dist% --frames-per-route %frames%
+goto end
+
+:multi_weather_mode
+echo.
+echo ========================================
+echo [多天气轮换收集模式]
+echo ========================================
+echo.
+echo 可选天气组合：
+echo   [1] basic    - 基础组合（4种天气）：晴朗正午、多云正午、晴朗日落、晴朗夜晚
+echo   [2] all_noon - 所有正午天气（5种）
+echo   [3] clear_all - 所有晴朗天气（3种）
+echo   [4] full     - 完整组合（11种天气）
+echo   [5] 自定义天气列表
+echo.
+set /p weather_choice="请选择天气组合 [1-5]: "
+
+if "%weather_choice%"=="1" (
+    set weather_preset=basic
+    goto run_multi_weather
+)
+if "%weather_choice%"=="2" (
+    set weather_preset=all_noon
+    goto run_multi_weather
+)
+if "%weather_choice%"=="3" (
+    set weather_preset=clear_all
+    goto run_multi_weather
+)
+if "%weather_choice%"=="4" (
+    set weather_preset=full
+    goto run_multi_weather
+)
+if "%weather_choice%"=="5" (
+    echo.
+    echo 请输入天气列表（空格分隔），可选天气：
+    echo   ClearNoon CloudyNoon WetNoon SoftRainNoon HardRainNoon
+    echo   ClearSunset CloudySunset WetSunset SoftRainSunset
+    echo   ClearNight CloudyNight WetNight SoftRainNight
+    echo.
+    set /p custom_weathers="天气列表: "
+    goto run_custom_weather
+)
+goto multi_weather_mode
+
+:run_multi_weather
+echo.
+echo ========================================
+echo [开始多天气轮换收集]
+echo ========================================
+echo   * 天气组合: %weather_preset%
+echo   * 策略: 智能筛选路径
+echo   * 每条路线: 1000帧
+echo   * 数据将按天气分目录保存
+echo ========================================
+echo.
+pause
+python auto_full_town_collection.py --multi-weather %weather_preset% --strategy smart --frames-per-route 1000
+goto end
+
+:run_custom_weather
+echo.
+echo ========================================
+echo [开始自定义天气收集]
+echo ========================================
+echo   * 天气列表: %custom_weathers%
+echo   * 策略: 智能筛选路径
+echo   * 每条路线: 1000帧
+echo ========================================
+echo.
+pause
+python auto_full_town_collection.py --weather-list %custom_weathers% --strategy smart --frames-per-route 1000
 goto end
 
 :end
