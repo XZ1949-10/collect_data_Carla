@@ -34,6 +34,7 @@ class H5DataVisualizer:
         self.total_frames = 0
         self.playing = False
         self.play_speed = 20  # 毫秒/帧
+        self.auto_next = False  # 是否在播放完后自动跳到下一个文件
         
         # 命令名称映射（只有4个有效命令）
         self.command_names = {
@@ -302,10 +303,15 @@ class H5DataVisualizer:
                          color, -1)
     
     def visualize(self):
-        """启动可视化窗口"""
+        """
+        启动可视化窗口
+        
+        返回:
+            str: 'quit' 退出, 'next' 下一个文件, 'prev' 上一个文件, None 正常结束
+        """
         if self.rgb_data is None or self.targets_data is None:
             print("❌ 请先加载数据！")
-            return
+            return None
         
         print("\n🎬 启动可视化窗口...")
         print("操作说明:")
@@ -314,10 +320,14 @@ class H5DataVisualizer:
         print("  • W/S键: 加速/减速")
         print("  • H键: 跳到第一帧")
         print("  • E键: 跳到最后一帧")
+        print("  • N键: 下一个文件")
+        print("  • P键: 上一个文件")
         print("  • Q或ESC: 退出\n")
         
         window_name = "H5 Data Viewer"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        
+        result = None
         
         while True:
             # 获取当前帧
@@ -348,11 +358,25 @@ class H5DataVisualizer:
             if self.playing and key == 255:  # 255表示没有按键
                 self.current_frame += 1
                 if self.current_frame >= self.total_frames:
-                    self.current_frame = 0  # 循环播放
+                    if self.auto_next:
+                        # 自动播放模式：播放完自动跳到下一个文件
+                        result = 'next'
+                        break
+                    else:
+                        self.current_frame = 0  # 循环播放
                 continue  # 立即进入下一次循环显示新帧
             
             if key == 27 or key == ord('q') or key == ord('Q'):  # ESC or Q
                 print("退出可视化")
+                result = 'quit'
+                break
+            elif key == ord('n') or key == ord('N'):  # N - 下一个文件
+                print("跳到下一个文件")
+                result = 'next'
+                break
+            elif key == ord('p') or key == ord('P'):  # P - 上一个文件
+                print("跳到上一个文件")
+                result = 'prev'
                 break
             elif key == 32:  # Space
                 self.playing = not self.playing
@@ -380,21 +404,24 @@ class H5DataVisualizer:
                 print("跳到最后一帧")
         
         cv2.destroyAllWindows()
+        return result
 
 
 class H5DataBrowser:
     """H5数据浏览器（浏览目录中的所有H5文件）"""
     
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, auto_play=False):
         """
         初始化浏览器
         
         参数:
             data_dir (str): 数据目录
+            auto_play (bool): 是否自动连续播放所有文件
         """
         self.data_dir = data_dir
         self.h5_files = []
         self.current_file_idx = 0
+        self.auto_play = auto_play
         
     def scan_directory(self):
         """扫描目录中的H5文件"""
@@ -426,6 +453,9 @@ class H5DataBrowser:
         print("\n📂 H5数据浏览器")
         print("="*70)
         
+        if self.auto_play:
+            print("🔄 自动连续播放模式 - 按N跳到下一个文件，按Q退出")
+        
         while self.current_file_idx < len(self.h5_files):
             current_file = self.h5_files[self.current_file_idx]
             
@@ -434,10 +464,27 @@ class H5DataBrowser:
             
             # 可视化当前文件
             visualizer = H5DataVisualizer(current_file)
+            visualizer.auto_next = self.auto_play  # 传递自动播放标志
             if visualizer.load_data():
-                visualizer.visualize()
+                result = visualizer.visualize()
+                
+                # 检查返回值决定下一步操作
+                if result == 'quit':
+                    print("退出浏览")
+                    break
+                elif result == 'next':
+                    self.current_file_idx += 1
+                    continue
+                elif result == 'prev':
+                    self.current_file_idx = max(0, self.current_file_idx - 1)
+                    continue
             
-            # 询问是否继续
+            # 自动播放模式下自动进入下一个文件
+            if self.auto_play:
+                self.current_file_idx += 1
+                continue
+            
+            # 手动模式：询问是否继续
             print("\n" + "="*70)
             choice = input("继续浏览下一个文件？(y/n/p=上一个): ").strip().lower()
             
@@ -459,13 +506,15 @@ def main():
     parser.add_argument('--dir', type=str, help='数据目录路径（浏览模式）')
     parser.add_argument('--browse', action='store_true', 
                        help='浏览模式：逐个查看目录中的所有H5文件')
+    parser.add_argument('--auto', action='store_true',
+                       help='自动连续播放模式：播放完一个文件自动播放下一个')
     
     args = parser.parse_args()
     
     if args.browse or args.dir:
         # 浏览模式
         data_dir = args.dir if args.dir else './auto_collected_data'
-        browser = H5DataBrowser(data_dir)
+        browser = H5DataBrowser(data_dir, auto_play=args.auto)
         if browser.scan_directory():
             browser.browse()
     elif args.file:
@@ -480,10 +529,11 @@ def main():
         print("="*70)
         print("\n请选择模式:")
         print("  [1] 查看单个H5文件")
-        print("  [2] 浏览目录中的所有H5文件")
+        print("  [2] 浏览目录中的所有H5文件（手动切换）")
+        print("  [3] 自动连续播放目录中的所有H5文件")
         print("  [Q] 退出")
         
-        choice = input("\n请输入选项 [1-2/Q]: ").strip()
+        choice = input("\n请输入选项 [1-3/Q]: ").strip()
         
         if choice == '1':
             file_path = input("请输入H5文件路径: ").strip()
@@ -494,7 +544,14 @@ def main():
             data_dir = input("请输入数据目录路径（默认: ./auto_collected_data）: ").strip()
             if not data_dir:
                 data_dir = './auto_collected_data'
-            browser = H5DataBrowser(data_dir)
+            browser = H5DataBrowser(data_dir, auto_play=False)
+            if browser.scan_directory():
+                browser.browse()
+        elif choice == '3':
+            data_dir = input("请输入数据目录路径（默认: ./auto_collected_data）: ").strip()
+            if not data_dir:
+                data_dir = './auto_collected_data'
+            browser = H5DataBrowser(data_dir, auto_play=True)
             if browser.scan_directory():
                 browser.browse()
         else:

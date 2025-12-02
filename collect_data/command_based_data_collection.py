@@ -99,13 +99,28 @@ class CommandBasedDataCollector:
         }
         
         # 摄像头配置
+        # 高分辨率采集（与推理代码一致，避免图像模糊）
+        self.camera_raw_width = 800
+        self.camera_raw_height = 600
+        
+        # 模型输入尺寸（保存时的目标尺寸）
         self.image_width = 200
         self.image_height = 88
+        
+        # 图像裁剪参数（与训练数据一致）
+        # 裁剪掉天空和车头部分，保留道路信息
+        self.image_cut_top = 115     # 裁剪顶部（天空）
+        self.image_cut_bottom = 510  # 裁剪底部（车头）
         
         # 命令追踪
         self.current_command = None
         self.previous_command = None
         self.segment_count = 0  # 当前段的帧数
+        
+        # 转弯命令持久化（解决转弯过程中命令被消费的问题）
+        self._last_turn_command = None  # 上一次检测到的转弯命令
+        self._turn_command_frames = 0   # 转弯命令持续的帧数
+        self._max_turn_frames = 100     # 转弯命令最大持续帧数（约5秒@20fps）
         
         # 保存统计
         self.total_saved_segments = 0
@@ -263,12 +278,13 @@ class CommandBasedDataCollector:
         return True
         
     def setup_camera(self):
-        """设置摄像头"""
+        """设置摄像头（高分辨率采集，后处理裁剪缩放）"""
         print("正在设置摄像头...")
         
         camera_bp = self.blueprint_library.find('sensor.camera.rgb')
-        camera_bp.set_attribute('image_size_x', str(self.image_width))
-        camera_bp.set_attribute('image_size_y', str(self.image_height))
+        # 使用高分辨率采集，避免图像模糊
+        camera_bp.set_attribute('image_size_x', str(self.camera_raw_width))
+        camera_bp.set_attribute('image_size_y', str(self.camera_raw_height))
         camera_bp.set_attribute('fov', '90')
         
         camera_transform = carla.Transform(
@@ -285,16 +301,43 @@ class CommandBasedDataCollector:
         
         self.camera.listen(lambda image: self._on_camera_update(image))
         
-        print("摄像头设置完成！")
+        print(f"摄像头设置完成！采集分辨率: {self.camera_raw_width}x{self.camera_raw_height}")
+        print(f"  → 裁剪后缩放到: {self.image_width}x{self.image_height}")
         
     def _on_camera_update(self, image):
-        """摄像头回调"""
+        """摄像头回调（高分辨率采集 → 裁剪 → 缩放）
+        
+        修复条纹噪声问题：
+        1. 正确处理BGRA到RGB的转换（避免内存对齐问题）
+        2. 使用连续内存数组避免条纹
+        3. 动态计算裁剪参数以适应不同分辨率
+        """
+        # 将原始数据转换为numpy数组
         array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
         array = np.reshape(array, (image.height, image.width, 4))
-        # 提取RGB通道并反转颜色顺序（BGRA -> RGB）
-        # 使用 .copy() 确保创建独立的数组，避免引用原始缓冲区
-        array = array[:, :, :3][:, :, ::-1].copy()
-        self.image_buffer.append(array)
+        
+        # 修复：正确提取BGR通道并转换为RGB（避免条纹噪声）
+        # CARLA返回的是BGRA格式，需要：1.取前3通道 2.BGR转RGB
+        # 使用np.ascontiguousarray确保内存连续，避免条纹
+        bgr = array[:, :, :3]
+        rgb = np.ascontiguousarray(bgr[:, :, ::-1])
+        
+        # 图像预处理：裁剪 + 缩放（与训练数据处理一致）
+        # 动态计算裁剪参数（适应不同分辨率）
+        # 原始参数是针对800x600的：top=115, bottom=510
+        # 裁剪比例：top=115/600=0.192, bottom=510/600=0.85
+        crop_top = int(image.height * 0.192)
+        crop_bottom = int(image.height * 0.85)
+        
+        # 步骤1: 裁剪（去除天空和车头）
+        cropped = rgb[crop_top:crop_bottom, :, :]
+        
+        # 步骤2: 缩放到模型输入尺寸
+        # 使用INTER_LINEAR替代INTER_AREA，减少条纹伪影
+        processed = cv2.resize(cropped, (self.image_width, self.image_height), 
+                               interpolation=cv2.INTER_LINEAR)
+        
+        self.image_buffer.append(processed)
     
     def _ask_user_save_segment(self, command, segment_size, show_visualization=False, 
                                 current_image=None, speed=0.0, current_frame=0, total_frames=0):
@@ -797,73 +840,101 @@ class CommandBasedDataCollector:
         """
         从 BasicAgent 的 local_planner 获取当前导航命令
         
-        改进：
-        1. 使用 get_incoming_waypoint_and_direction() 获取前方路点的方向
-        2. 如果检测到变道命令(CHANGELANELEFT/CHANGELANERIGHT)，继续向前查找
-           是否有真正的转弯命令(LEFT/RIGHT/STRAIGHT)，避免转弯时显示为Follow
+        修复问题：转弯命令出现太早
+        
+        改进策略：
+        1. 缩小搜索范围：只搜索前5个路点（约10米），避免过早检测到转弯
+        2. 基于距离的命令触发：只有当距离路口足够近时才返回转弯命令
+        3. 转弯命令持久化：当检测到转弯命令时保存，直到转弯完成
         
         返回:
             float: 命令数值，只返回以下四个有效值：
                    2.0=Follow, 3.0=Left, 4.0=Right, 5.0=Straight
         """
         if not AGENTS_AVAILABLE or self.agent is None:
-            # 降级方案：返回默认命令
             return 2.0  # Follow
         
         try:
-            # 从 BasicAgent 的 local_planner 获取 RoadOption
             local_planner = self.agent.get_local_planner()
             if local_planner is None:
                 return 2.0
             
-            # 获取路点队列
             waypoints_queue = local_planner.get_plan()
             if waypoints_queue is None or len(waypoints_queue) == 0:
                 return 2.0
             
-            # 向前查找有意义的命令（跳过LANEFOLLOW和变道命令）
-            # 优先查找转弯命令(LEFT/RIGHT/STRAIGHT)
-            road_option = None
+            # ========== 修复：缩小搜索范围，避免过早检测转弯 ==========
+            # 只搜索前5个路点（约10米，因为sampling_radius=2.0）
+            # 这样只有在接近路口时才会检测到转弯命令
+            search_range = min(5, len(waypoints_queue))
             
-            # 搜索范围：前10个路点
-            search_range = min(10, len(waypoints_queue))
+            found_turn_command = None
+            turn_waypoint_index = -1
             
             for i in range(search_range):
                 _, direction = waypoints_queue[i]
                 
-                # 如果找到转弯命令，立即返回
+                # 如果找到转弯命令，记录位置
                 if direction in [RoadOption.LEFT, RoadOption.RIGHT, RoadOption.STRAIGHT]:
-                    road_option = direction
+                    found_turn_command = direction
+                    turn_waypoint_index = i
                     break
                 
-                # 如果是变道命令，继续查找（不要立即返回Follow）
-                if direction in [RoadOption.CHANGELANELEFT, RoadOption.CHANGELANERIGHT]:
-                    continue
-                
-                # 如果是LANEFOLLOW，继续查找
-                if direction == RoadOption.LANEFOLLOW:
+                # 如果是变道命令或LANEFOLLOW，继续查找
+                if direction in [RoadOption.CHANGELANELEFT, RoadOption.CHANGELANERIGHT, RoadOption.LANEFOLLOW]:
                     continue
             
-            # 如果没有找到转弯命令，使用第一个非VOID的命令
-            if road_option is None:
-                # 使用 steps=3 的前瞻
-                incoming_wp, incoming_direction = local_planner.get_incoming_waypoint_and_direction(steps=3)
+            # ========== 基于距离的命令触发 ==========
+            if found_turn_command is not None and turn_waypoint_index >= 0:
+                # 计算到转弯路点的距离
+                turn_waypoint = waypoints_queue[turn_waypoint_index][0]
+                vehicle_location = self.vehicle.get_location()
+                distance_to_turn = vehicle_location.distance(turn_waypoint.transform.location)
                 
-                if incoming_direction is not None and incoming_direction != RoadOption.VOID:
-                    road_option = incoming_direction
+                # 只有距离小于15米时才触发转弯命令
+                # 这样可以避免在很远处就显示转弯命令
+                if distance_to_turn < 15.0:
+                    self._last_turn_command = self.road_option_to_command.get(found_turn_command, 2.0)
+                    self._turn_command_frames = 0
+                    return self._last_turn_command
                 else:
-                    # 降级：使用当前目标路点的方向
-                    road_option = local_planner.target_road_option
-                    if road_option is None:
-                        road_option = RoadOption.LANEFOLLOW
+                    # 距离太远，返回Follow
+                    return 2.0
             
-            # 映射到数值命令
+            # ========== 转弯命令持久化逻辑 ==========
+            # 没有在队列中找到转弯命令，检查是否应该继续使用之前的转弯命令
+            if self._last_turn_command is not None and self._last_turn_command != 2.0:
+                steering = abs(self.vehicle.get_control().steer) if self.vehicle else 0
+                self._turn_command_frames += 1
+                
+                if self._turn_command_frames >= self._max_turn_frames:
+                    # 超过最大帧数，转弯结束
+                    self._last_turn_command = None
+                    self._turn_command_frames = 0
+                elif self._turn_command_frames > 30 and steering < 0.1:
+                    # 已经持续30帧且方向盘基本回正，转弯结束
+                    self._last_turn_command = None
+                    self._turn_command_frames = 0
+                else:
+                    # 还在转弯中，继续返回转弯命令
+                    return self._last_turn_command
+            
+            # ========== 降级处理 ==========
+            incoming_wp, incoming_direction = local_planner.get_incoming_waypoint_and_direction(steps=3)
+            
+            if incoming_direction is not None and incoming_direction != RoadOption.VOID:
+                road_option = incoming_direction
+            else:
+                road_option = local_planner.target_road_option
+                if road_option is None:
+                    road_option = RoadOption.LANEFOLLOW
+            
             command = self.road_option_to_command.get(road_option, 2.0)
             return command
             
         except Exception as e:
             print(f"⚠️  获取导航命令失败: {e}")
-            return 2.0  # 默认返回 Follow
+            return 2.0
     
     def _is_route_completed(self):
         """
