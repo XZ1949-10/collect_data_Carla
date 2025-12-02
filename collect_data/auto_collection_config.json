@@ -63,13 +63,19 @@
     
     "route_generation": {
         "_comment": "路线生成策略配置",
-        "strategy": "exhaustive",
-        "_comment_strategy": "路线生成策略：smart=智能选择（约150条路线），exhaustive=穷举所有（约5000条路线）",
-        "min_distance": 80.0,
-        "_comment_min_distance": "最小路线距离（米），过短的路线会被过滤",
-        "max_distance": 500.0,
-        "_comment_max_distance": "最大路线距离（米），过长的路线会被过滤",
-        "description": "smart=智能选择路线（推荐），exhaustive=穷举所有组合（数量巨大）"
+        "strategy": "smart",
+        "_comment_strategy": "路线生成策略：smart=智能选择v2.0（命令平衡+路径去重，推荐），exhaustive=穷举所有（约5000条路线）",
+        "min_distance": 100.0,
+        "_comment_min_distance": "最小路线距离（米），过短的路线会被过滤，推荐100m以上确保有足够数据",
+        "max_distance": 400.0,
+        "_comment_max_distance": "最大路线距离（米），过长的路线会被过滤，推荐400m避免单条路线过长",
+        "target_routes": 600,
+        "_comment_target_routes": "智能策略目标路线数量（仅smart模式有效），推荐100-300，越多数据越丰富但耗时越长",
+        "overlap_threshold": 0.4,
+        "_comment_overlap_threshold": "路径重叠阈值（0-1），超过此值的路线会被去重，推荐0.3-0.5，越低去重越严格",
+        "turn_priority_ratio": 0.7,
+        "_comment_turn_priority_ratio": "转弯路线优先配额（0-1），70%的路线配额优先给包含转弯的路线",
+        "description": "smart=智能选择v2.0（命令平衡+路径去重+场景多样性），exhaustive=穷举所有组合"
     },
     
     "collection_settings": {
