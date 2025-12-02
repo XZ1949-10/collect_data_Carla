@@ -69,7 +69,7 @@
         "_comment_min_distance": "最小路线距离（米，使用实际路径距离），推荐100m以上确保有足够数据",
         "max_distance": 400.0,
         "_comment_max_distance": "最大路线距离（米，使用实际路径距离），推荐400m避免单条路线过长",
-        "target_routes": 600,
+        "target_routes": 0,
         "_comment_target_routes": "目标路线数量（smart和exhaustive模式都有效），0=不限制，推荐100-600",
         "overlap_threshold": 0.4,
         "_comment_overlap_threshold": "路径重叠阈值（0-1），超过此值的路线会被去重，推荐0.3-0.5，越低去重越严格",
