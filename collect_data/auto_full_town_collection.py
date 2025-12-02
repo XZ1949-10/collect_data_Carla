@@ -255,12 +255,14 @@ class AutoFullTownCollector:
         """
         分析所有候选路线，预测每条路线的命令分布
         
+        改进：使用实际路径距离进行筛选，而非直线距离
+        
         返回:
             list: [{
                 'start_idx': int,
                 'end_idx': int,
-                'distance': float,
-                'route_distance': float,
+                'distance': float,          # 直线距离
+                'route_distance': float,    # 实际路径距离
                 'commands': {cmd: count},
                 'command_sequence': [cmd1, cmd2, ...],
                 'waypoints': [(x, y), ...]
@@ -282,18 +284,21 @@ class AutoFullTownCollector:
         
         total_pairs = 0
         analyzed = 0
+        skipped_by_distance = 0
         
-        # 先计算总数用于进度显示
+        # 先计算总数用于进度显示（使用更宽松的直线距离粗筛）
         for start_idx in range(num_spawns):
             for end_idx in range(num_spawns):
                 if start_idx != end_idx:
                     start_loc = self.spawn_points[start_idx].location
                     end_loc = self.spawn_points[end_idx].location
                     distance = self._calculate_distance(start_loc, end_loc)
-                    if self.min_distance <= distance <= self.max_distance:
+                    # 使用更宽松的范围进行粗筛（实际路径通常比直线距离长）
+                    if distance >= self.min_distance * 0.5 and distance <= self.max_distance * 1.5:
                         total_pairs += 1
         
-        print(f"  需要分析 {total_pairs} 条候选路线...")
+        print(f"  需要分析约 {total_pairs} 条候选路线...")
+        print(f"  距离范围: {self.min_distance:.0f}m - {self.max_distance:.0f}m（使用实际路径距离）")
         
         for start_idx in range(num_spawns):
             start_loc = self.spawn_points[start_idx].location
@@ -303,9 +308,10 @@ class AutoFullTownCollector:
                     continue
                 
                 end_loc = self.spawn_points[end_idx].location
-                distance = self._calculate_distance(start_loc, end_loc)
+                straight_distance = self._calculate_distance(start_loc, end_loc)
                 
-                if not (self.min_distance <= distance <= self.max_distance):
+                # 直线距离粗筛（使用更宽松的范围）
+                if straight_distance < self.min_distance * 0.5 or straight_distance > self.max_distance * 1.5:
                     continue
                 
                 # 规划路径并分析命令
@@ -344,6 +350,11 @@ class AutoFullTownCollector:
                             command_sequence.append(cmd)
                             prev_cmd = cmd
                     
+                    # 使用实际路径距离进行精确筛选
+                    if route_distance < self.min_distance or route_distance > self.max_distance:
+                        skipped_by_distance += 1
+                        continue
+                    
                     # 计算路线价值分数（转弯命令更有价值）
                     turn_count = commands[3] + commands[4]  # Left + Right
                     straight_count = commands[5]
@@ -352,7 +363,7 @@ class AutoFullTownCollector:
                     candidates.append({
                         'start_idx': start_idx,
                         'end_idx': end_idx,
-                        'distance': distance,
+                        'distance': straight_distance,
                         'route_distance': route_distance,
                         'commands': commands,
                         'command_sequence': command_sequence,
@@ -367,6 +378,9 @@ class AutoFullTownCollector:
                 analyzed += 1
                 if analyzed % 100 == 0:
                     print(f"  进度: {analyzed}/{total_pairs} ({analyzed/total_pairs*100:.1f}%)")
+        
+        if skipped_by_distance > 0:
+            print(f"  ℹ️  因实际路径距离不符跳过 {skipped_by_distance} 条")
         
         return candidates
     
@@ -454,40 +468,78 @@ class AutoFullTownCollector:
         
         return selected
     
-    def _deduplicate_routes(self, routes, overlap_threshold=0.5):
+    def _deduplicate_routes(self, routes, overlap_threshold=None):
         """
-        路径去重 - 移除高度重叠的路线
+        路径去重 - 移除重复和高度重叠的路线
+        
+        去重策略：
+        1. 移除完全相同的 (start_idx, end_idx) 对
+        2. 移除路径重叠度超过阈值的路线（基于实际路径waypoints）
         
         参数:
-            routes: 路线列表
-            overlap_threshold: 重叠阈值（0-1），超过此值认为重复（None则使用self.overlap_threshold）
+            routes: 路线列表（字典格式，包含 start_idx, end_idx, waypoints 等）
+            overlap_threshold: 路径重叠阈值（0-1），超过此值视为重复，None则使用self.overlap_threshold
         """
-        if overlap_threshold is None:
-            overlap_threshold = self.overlap_threshold
-        
         if len(routes) <= 1:
             return routes
         
-        deduplicated = [routes[0]]
-        removed_count = 0
+        if overlap_threshold is None:
+            overlap_threshold = self.overlap_threshold
         
-        for route in routes[1:]:
-            is_duplicate = False
+        # 第一步：移除完全相同的起点-终点对
+        seen_pairs = set()
+        unique_routes = []
+        duplicate_count = 0
+        
+        for route in routes:
+            pair_key = (route['start_idx'], route['end_idx'])
+            if pair_key in seen_pairs:
+                duplicate_count += 1
+                continue
+            seen_pairs.add(pair_key)
+            unique_routes.append(route)
+        
+        if duplicate_count > 0:
+            print(f"  移除了 {duplicate_count} 条完全重复路线（相同起点-终点）")
+        
+        # 第二步：基于路径重叠度去重
+        # 按优先级排序（转弯多的优先保留）
+        unique_routes.sort(key=lambda x: (-x.get('turn_count', 0), -x.get('priority', 0)))
+        
+        deduplicated = []
+        overlap_removed = 0
+        
+        for route in unique_routes:
+            # 检查与已选路线的重叠度
+            is_overlapping = False
+            route_waypoints = route.get('waypoints', [])
             
-            for existing in deduplicated:
-                overlap = self._calculate_route_overlap(route['waypoints'], existing['waypoints'])
+            # 如果没有waypoints信息，直接保留
+            if not route_waypoints:
+                deduplicated.append(route)
+                continue
+            
+            for selected in deduplicated:
+                selected_waypoints = selected.get('waypoints', [])
+                if not selected_waypoints:
+                    continue
+                
+                overlap = self._calculate_route_overlap(route_waypoints, selected_waypoints)
                 if overlap > overlap_threshold:
-                    is_duplicate = True
-                    removed_count += 1
+                    is_overlapping = True
+                    overlap_removed += 1
                     break
             
-            if not is_duplicate:
+            if not is_overlapping:
                 deduplicated.append(route)
         
-        print(f"  移除了 {removed_count} 条重复路线")
+        if overlap_removed > 0:
+            print(f"  移除了 {overlap_removed} 条高重叠路线（重叠度>{overlap_threshold*100:.0f}%）")
+        
+        print(f"  去重后剩余 {len(deduplicated)} 条路线")
         
         # 转换为标准格式
-        result = [(r['start_idx'], r['end_idx'], r['distance']) for r in deduplicated]
+        result = [(r['start_idx'], r['end_idx'], r.get('route_distance', r['distance'])) for r in deduplicated]
         
         # 打乱顺序
         random.shuffle(result)
@@ -496,9 +548,17 @@ class AutoFullTownCollector:
     
     def _calculate_route_overlap(self, waypoints1, waypoints2, grid_size=10.0):
         """
-        计算两条路线的重叠度
+        计算两条路线的路径重叠度
         
-        使用网格化方法快速计算
+        使用网格化方法快速计算（Jaccard相似度）
+        
+        参数:
+            waypoints1: 第一条路线的waypoints列表 [(x, y), ...]
+            waypoints2: 第二条路线的waypoints列表 [(x, y), ...]
+            grid_size: 网格大小（米），用于离散化路径点
+            
+        返回:
+            float: 重叠度 (0-1)，0表示完全不重叠，1表示完全重叠
         """
         if not waypoints1 or not waypoints2:
             return 0.0
@@ -555,8 +615,261 @@ class AutoFullTownCollector:
         return route_pairs
     
     def _generate_exhaustive_routes(self, num_spawns):
-        """穷举所有路线组合"""
-        print(f"策略: 穷举所有组合（警告：数量巨大！）")
+        """
+        穷举所有路线组合（带命令平衡、路径去重和数量限制）
+        
+        特点：
+        1. 遍历所有起点-终点组合
+        2. 使用实际路径距离筛选（而非直线距离）
+        3. 分析每条路线的命令分布
+        4. 基于路径重叠度去重
+        5. 按命令平衡排序，优先收集稀缺命令的路线
+        6. 支持 target_routes 数量限制
+        """
+        print(f"策略: 穷举所有组合 + 命令平衡 + 路径去重")
+        print(f"距离范围: {self.min_distance:.0f}m - {self.max_distance:.0f}m（使用实际路径距离）")
+        print(f"目标路线数: {self.target_routes}（0=不限制）")
+        
+        if not AGENTS_AVAILABLE or self.route_planner is None:
+            print("⚠️  路径规划器不可用，使用基础穷举（无命令分析）")
+            return self._generate_basic_exhaustive_routes(num_spawns)
+        
+        # 命令映射
+        command_map = {
+            'LANEFOLLOW': 2,
+            'LEFT': 3,
+            'RIGHT': 4,
+            'STRAIGHT': 5,
+            'CHANGELANELEFT': 2,
+            'CHANGELANERIGHT': 2,
+        }
+        
+        print("\n🔍 第一阶段：分析所有候选路线...")
+        
+        # 收集所有候选路线
+        candidates = []
+        seen_pairs = set()  # 用于去重：只去除完全相同的(start, end)对
+        
+        # 先计算总数（使用直线距离粗筛）
+        total_pairs = 0
+        for start_idx in range(num_spawns):
+            for end_idx in range(num_spawns):
+                if start_idx != end_idx:
+                    start_loc = self.spawn_points[start_idx].location
+                    end_loc = self.spawn_points[end_idx].location
+                    distance = self._calculate_distance(start_loc, end_loc)
+                    # 使用更宽松的直线距离范围进行粗筛（实际路径通常更长）
+                    if distance >= self.min_distance * 0.5 and distance <= self.max_distance * 1.5:
+                        total_pairs += 1
+        
+        print(f"  需要分析约 {total_pairs} 条候选路线...")
+        
+        analyzed = 0
+        skipped_by_distance = 0
+        
+        for start_idx in range(num_spawns):
+            start_loc = self.spawn_points[start_idx].location
+            
+            for end_idx in range(num_spawns):
+                if start_idx == end_idx:
+                    continue
+                
+                # 去重检查：只去除完全相同的(start, end)对
+                pair_key = (start_idx, end_idx)
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+                
+                end_loc = self.spawn_points[end_idx].location
+                straight_distance = self._calculate_distance(start_loc, end_loc)
+                
+                # 直线距离粗筛
+                if straight_distance < self.min_distance * 0.5 or straight_distance > self.max_distance * 1.5:
+                    continue
+                
+                # 规划路径并分析命令
+                try:
+                    route = self.route_planner.trace_route(
+                        self.spawn_points[start_idx].location,
+                        self.spawn_points[end_idx].location
+                    )
+                    
+                    if not route or len(route) < 2:
+                        continue
+                    
+                    # 分析命令分布并计算实际路径距离
+                    commands = {2: 0, 3: 0, 4: 0, 5: 0}
+                    waypoints = []
+                    route_distance = 0.0
+                    
+                    prev_cmd = None
+                    for i, (wp, road_option) in enumerate(route):
+                        if i > 0:
+                            prev_wp = route[i-1][0]
+                            route_distance += wp.transform.location.distance(prev_wp.transform.location)
+                        
+                        waypoints.append((wp.transform.location.x, wp.transform.location.y))
+                        
+                        cmd_name = road_option.name if hasattr(road_option, 'name') else str(road_option)
+                        cmd = command_map.get(cmd_name, 2)
+                        
+                        if cmd != prev_cmd:
+                            commands[cmd] += 1
+                            prev_cmd = cmd
+                    
+                    # 使用实际路径距离进行精确筛选
+                    if route_distance < self.min_distance or route_distance > self.max_distance:
+                        skipped_by_distance += 1
+                        continue
+                    
+                    turn_count = commands[3] + commands[4]
+                    
+                    candidates.append({
+                        'start_idx': start_idx,
+                        'end_idx': end_idx,
+                        'distance': straight_distance,
+                        'route_distance': route_distance,
+                        'commands': commands,
+                        'waypoints': waypoints,
+                        'turn_count': turn_count
+                    })
+                    
+                except Exception:
+                    # 无法规划的路线，跳过
+                    pass
+                
+                analyzed += 1
+                if analyzed % 200 == 0:
+                    print(f"  进度: {analyzed}/{total_pairs} ({analyzed/total_pairs*100:.1f}%)")
+        
+        print(f"  ✅ 分析完成，共 {len(candidates)} 条有效路线")
+        if skipped_by_distance > 0:
+            print(f"  ℹ️  因实际路径距离不符跳过 {skipped_by_distance} 条")
+        
+        if not candidates:
+            print("❌ 没有找到有效的候选路线")
+            return []
+        
+        # 第二阶段：路径去重
+        print("\n🔄 第二阶段：路径去重...")
+        deduplicated = self._deduplicate_routes_internal(candidates)
+        
+        # 第三阶段：命令平衡排序和数量限制
+        print("\n🎯 第三阶段：命令平衡排序...")
+        
+        # 统计命令分布
+        total_commands = {2: 0, 3: 0, 4: 0, 5: 0}
+        for c in deduplicated:
+            for cmd, count in c['commands'].items():
+                total_commands[cmd] += count
+        
+        cmd_names = {2: 'Follow', 3: 'Left', 4: 'Right', 5: 'Straight'}
+        print(f"  命令分布:")
+        for cmd, count in total_commands.items():
+            print(f"    • {cmd_names[cmd]}: {count}")
+        
+        # 计算稀缺度
+        total = sum(total_commands.values()) or 1
+        scarcity = {cmd: 1.0 - (count / total) for cmd, count in total_commands.items()}
+        
+        # 为每条路线计算优先级（转弯命令更有价值）
+        for c in deduplicated:
+            priority = 0
+            for cmd, count in c['commands'].items():
+                weight = 3 if cmd in [3, 4] else (2 if cmd == 5 else 0.5)
+                priority += count * scarcity[cmd] * weight
+            c['priority'] = priority
+        
+        # 按优先级排序（高优先级在前）
+        deduplicated.sort(key=lambda x: (-x['turn_count'], -x['priority']))
+        
+        # 应用数量限制
+        if self.target_routes > 0 and len(deduplicated) > self.target_routes:
+            print(f"  应用数量限制: {len(deduplicated)} → {self.target_routes}")
+            deduplicated = deduplicated[:self.target_routes]
+        
+        # 统计排序后的命令分布
+        turn_routes = sum(1 for c in deduplicated if c['turn_count'] > 0)
+        print(f"  包含转弯的路线: {turn_routes} 条 ({turn_routes/len(deduplicated)*100:.1f}%)")
+        
+        # 分组打乱并交替合并
+        turn_candidates = [c for c in deduplicated if c['turn_count'] > 0]
+        other_candidates = [c for c in deduplicated if c['turn_count'] == 0]
+        
+        random.shuffle(turn_candidates)
+        random.shuffle(other_candidates)
+        
+        # 交替合并，确保转弯路线分散在整个收集过程中
+        route_pairs = []
+        turn_ratio = len(turn_candidates) / len(deduplicated) if deduplicated else 0.5
+        ti, oi = 0, 0
+        
+        while ti < len(turn_candidates) or oi < len(other_candidates):
+            if ti < len(turn_candidates) and (oi >= len(other_candidates) or random.random() < turn_ratio):
+                c = turn_candidates[ti]
+                route_pairs.append((c['start_idx'], c['end_idx'], c['route_distance']))
+                ti += 1
+            elif oi < len(other_candidates):
+                c = other_candidates[oi]
+                route_pairs.append((c['start_idx'], c['end_idx'], c['route_distance']))
+                oi += 1
+        
+        print(f"\n✅ 穷举路线生成完成: {len(route_pairs)} 条")
+        print(f"  • 转弯路线: {len(turn_candidates)} 条")
+        print(f"  • 其他路线: {len(other_candidates)} 条")
+        
+        return route_pairs
+    
+    def _deduplicate_routes_internal(self, candidates):
+        """
+        内部去重函数（用于exhaustive模式，保留字典格式）
+        
+        参数:
+            candidates: 候选路线列表（字典格式）
+            
+        返回:
+            list: 去重后的路线列表（字典格式）
+        """
+        if len(candidates) <= 1:
+            return candidates
+        
+        # 按优先级排序（转弯多的优先保留）
+        candidates.sort(key=lambda x: (-x.get('turn_count', 0), -x.get('priority', 0)))
+        
+        deduplicated = []
+        overlap_removed = 0
+        
+        for route in candidates:
+            is_overlapping = False
+            route_waypoints = route.get('waypoints', [])
+            
+            if not route_waypoints:
+                deduplicated.append(route)
+                continue
+            
+            for selected in deduplicated:
+                selected_waypoints = selected.get('waypoints', [])
+                if not selected_waypoints:
+                    continue
+                
+                overlap = self._calculate_route_overlap(route_waypoints, selected_waypoints)
+                if overlap > self.overlap_threshold:
+                    is_overlapping = True
+                    overlap_removed += 1
+                    break
+            
+            if not is_overlapping:
+                deduplicated.append(route)
+        
+        if overlap_removed > 0:
+            print(f"  移除了 {overlap_removed} 条高重叠路线（重叠度>{self.overlap_threshold*100:.0f}%）")
+        
+        print(f"  去重后剩余 {len(deduplicated)} 条路线")
+        return deduplicated
+    
+    def _generate_basic_exhaustive_routes(self, num_spawns):
+        """基础穷举（无命令分析，当路径规划器不可用时使用）"""
+        print(f"使用基础穷举策略...")
         
         route_pairs = []
         for start_idx in range(num_spawns):
@@ -571,7 +884,7 @@ class AutoFullTownCollector:
                 if self.min_distance <= distance <= self.max_distance:
                     route_pairs.append((start_idx, end_idx, distance))
         
-        print(f"✅ 生成了 {len(route_pairs)} 条穷举路线")
+        print(f"✅ 生成了 {len(route_pairs)} 条基础穷举路线")
         random.shuffle(route_pairs)
         return route_pairs
     
@@ -580,11 +893,11 @@ class AutoFullTownCollector:
         distances = [d for _, _, d in route_pairs]
         print(f"\n📊 路线统计:")
         print(f"  • 总路线数: {len(route_pairs)}")
-        print(f"  • 平均距离: {np.mean(distances):.1f}m")
-        print(f"  • 最短距离: {np.min(distances):.1f}m")
-        print(f"  • 最长距离: {np.max(distances):.1f}m")
+        print(f"  • 平均路径距离: {np.mean(distances):.1f}m")
+        print(f"  • 最短路径距离: {np.min(distances):.1f}m")
+        print(f"  • 最长路径距离: {np.max(distances):.1f}m")
         
-        # 估算收集时间
+        # 估算收集时间（每条路线约2分钟）
         estimated_minutes = len(route_pairs) * 2
         print(f"  • 预计耗时: {estimated_minutes:.0f}分钟 ({estimated_minutes/60:.1f}小时)")
         print(f"  • ✅ 已打乱路线顺序")

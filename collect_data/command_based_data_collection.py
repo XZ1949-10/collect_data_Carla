@@ -901,22 +901,59 @@ class CommandBasedDataCollector:
                     # 距离太远，返回Follow
                     return 2.0
             
-            # ========== 转弯命令持久化逻辑 ==========
-            # 没有在队列中找到转弯命令，检查是否应该继续使用之前的转弯命令
+            # ========== 检查是否已离开交叉口（关键修复 v2） ==========
+            # 综合判断是否应该重置转弯/直行命令
+            # 条件：
+            # 1. 队列前几个路点全是 LANEFOLLOW
+            # 2. 车辆当前不在交叉口内（使用 waypoint.is_junction 判断）
+            # 3. 方向盘基本回正 或 已经持续足够帧数
+            
             if self._last_turn_command is not None and self._last_turn_command != 2.0:
+                # 检查队列是否全是 LANEFOLLOW
+                check_range = min(5, len(waypoints_queue))
+                all_lane_follow = all(
+                    waypoints_queue[i][1] == RoadOption.LANEFOLLOW 
+                    for i in range(check_range)
+                )
+                
+                # 检查车辆是否在交叉口内
+                current_waypoint = self._map.get_waypoint(self.vehicle.get_location()) if hasattr(self, '_map') else None
+                if current_waypoint is None:
+                    current_waypoint = self.world.get_map().get_waypoint(self.vehicle.get_location())
+                is_in_junction = current_waypoint.is_junction if current_waypoint else False
+                
+                # 获取方向盘角度
                 steering = abs(self.vehicle.get_control().steer) if self.vehicle else 0
+                
+                # 增加帧计数
                 self._turn_command_frames += 1
                 
+                # 判断是否应该重置命令
+                should_reset = False
+                
+                # 条件1：超过最大帧数，强制重置
                 if self._turn_command_frames >= self._max_turn_frames:
-                    # 超过最大帧数，转弯结束
+                    should_reset = True
+                
+                # 条件2：队列全是 LANEFOLLOW + 不在交叉口内 + 方向盘回正
+                elif all_lane_follow and not is_in_junction and steering < 0.15:
+                    should_reset = True
+                
+                # 条件3：队列全是 LANEFOLLOW + 不在交叉口内 + 已持续30帧以上
+                elif all_lane_follow and not is_in_junction and self._turn_command_frames > 30:
+                    should_reset = True
+                
+                # 条件4：队列全是 LANEFOLLOW + 已持续50帧以上（即使在交叉口内也重置）
+                elif all_lane_follow and self._turn_command_frames > 50:
+                    should_reset = True
+                
+                if should_reset:
+                    # 重置转弯/直行命令
                     self._last_turn_command = None
                     self._turn_command_frames = 0
-                elif self._turn_command_frames > 30 and steering < 0.1:
-                    # 已经持续30帧且方向盘基本回正，转弯结束
-                    self._last_turn_command = None
-                    self._turn_command_frames = 0
+                    return 2.0  # 返回 Follow
                 else:
-                    # 还在转弯中，继续返回转弯命令
+                    # 还在转弯/直行中，继续返回之前的命令
                     return self._last_turn_command
             
             # ========== 降级处理 ==========
