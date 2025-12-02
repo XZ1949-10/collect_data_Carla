@@ -71,9 +71,9 @@
         "_comment_max_distance": "最大路线距离（米，使用实际路径距离），推荐400m避免单条路线过长",
         "target_routes": 0,
         "_comment_target_routes": "目标路线数量（smart和exhaustive模式都有效），0=不限制，推荐100-600",
-        "overlap_threshold": 0.4,
+        "overlap_threshold": 0.8,
         "_comment_overlap_threshold": "路径重叠阈值（0-1），超过此值的路线会被去重，推荐0.3-0.5，越低去重越严格",
-        "turn_priority_ratio": 0.7,
+        "turn_priority_ratio": 0.5,
         "_comment_turn_priority_ratio": "转弯路线优先配额（0-1），70%的路线配额优先给包含转弯的路线",
         "_description_v2": "v2.0改进：1.使用实际路径距离筛选 2.基于路径重叠度去重 3.exhaustive模式支持数量限制"
     },
