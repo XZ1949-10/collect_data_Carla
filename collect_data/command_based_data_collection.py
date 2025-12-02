@@ -113,6 +113,7 @@ class CommandBasedDataCollector:
         self.command_names = {2: 'Follow', 3: 'Left', 4: 'Right', 5: 'Straight'}
         
         # RoadOption 到数值命令的映射
+        # 注意：只映射到 2.0, 3.0, 4.0, 5.0 四个有效命令
         self.road_option_to_command = {
             RoadOption.LANEFOLLOW: 2.0,      # Follow
             RoadOption.LEFT: 3.0,            # Left
@@ -120,7 +121,7 @@ class CommandBasedDataCollector:
             RoadOption.STRAIGHT: 5.0,        # Straight
             RoadOption.CHANGELANELEFT: 2.0,  # 变道也算Follow
             RoadOption.CHANGELANERIGHT: 2.0,
-            RoadOption.VOID: 0.0             # 到达目标
+            RoadOption.VOID: 2.0             # 到达目标时也返回Follow（避免无效命令）
         }
         
         # 可视化
@@ -290,8 +291,9 @@ class CommandBasedDataCollector:
         """摄像头回调"""
         array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
         array = np.reshape(array, (image.height, image.width, 4))
-        array = array[:, :, :3]
-        array = array[:, :, ::-1]
+        # 提取RGB通道并反转颜色顺序（BGRA -> RGB）
+        # 使用 .copy() 确保创建独立的数组，避免引用原始缓冲区
+        array = array[:, :, :3][:, :, ::-1].copy()
         self.image_buffer.append(array)
     
     def _ask_user_save_segment(self, command, segment_size, show_visualization=False, 
@@ -584,8 +586,8 @@ class CommandBasedDataCollector:
                     if len(self.image_buffer) == 0:
                         continue
                     
-                    # 获取数据
-                    current_image = self.image_buffer[-1]
+                    # 获取数据 - 必须复制图像，否则所有帧都会指向同一个数组！
+                    current_image = self.image_buffer[-1].copy()
                     vehicle_velocity = self.vehicle.get_velocity()
                     vehicle_control = self.vehicle.get_control()
                     
@@ -801,7 +803,8 @@ class CommandBasedDataCollector:
            是否有真正的转弯命令(LEFT/RIGHT/STRAIGHT)，避免转弯时显示为Follow
         
         返回:
-            float: 命令数值 (2.0=Follow, 3.0=Left, 4.0=Right, 5.0=Straight, 0.0=VOID)
+            float: 命令数值，只返回以下四个有效值：
+                   2.0=Follow, 3.0=Left, 4.0=Right, 5.0=Straight
         """
         if not AGENTS_AVAILABLE or self.agent is None:
             # 降级方案：返回默认命令

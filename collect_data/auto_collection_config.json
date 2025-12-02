@@ -63,7 +63,7 @@
     
     "route_generation": {
         "_comment": "路线生成策略配置",
-        "strategy": "smart",
+        "strategy": "exhaustive",
         "_comment_strategy": "路线生成策略：smart=智能选择（约150条路线），exhaustive=穷举所有（约5000条路线）",
         "min_distance": 80.0,
         "_comment_min_distance": "最小路线距离（米），过短的路线会被过滤",
@@ -74,7 +74,7 @@
     
     "collection_settings": {
         "_comment": "数据收集参数配置",
-        "frames_per_route": 1000,
+        "frames_per_route": 2000,
         "_comment_frames_per_route": "每条路线收集的最大帧数，实际可能因到达终点而提前结束",
         "save_path": "E://carla_data",
         "_comment_save_path": "数据保存路径，相对路径或绝对路径均可",
@@ -90,7 +90,7 @@
         "_comment": "多天气轮换收集配置",
         "enabled": true,
         "_comment_enabled": "是否启用多天气轮换（true=启用，每个天气收集完后自动切换下一个）",
-        "weather_preset": "full",
+        "weather_preset": "basic",
         "_comment_weather_preset": "天气组合预设：all_noon/all_sunset/all_night/clear_all/rain_all/basic/full",
         "custom_weather_list": [],
         "_comment_custom_weather_list": "自定义天气列表（优先于preset），如：[\"ClearNoon\", \"CloudyNoon\", \"WetNoon\"]",

@@ -670,8 +670,8 @@ class AutoFullTownCollector:
                 if len(self.collector.image_buffer) == 0:
                     continue
                 
-                # 获取数据
-                current_image = self.collector.image_buffer[-1]
+                # 获取数据 - 必须复制图像，否则所有帧都会指向同一个数组！
+                current_image = self.collector.image_buffer[-1].copy()
                 vehicle_velocity = self.collector.vehicle.get_velocity()
                 vehicle_control = self.collector.vehicle.get_control()
                 
@@ -728,10 +728,10 @@ class AutoFullTownCollector:
                     print(f"  [收集中] 帧数: {collected_frames}/{max_frames}, "
                           f"命令: {cmd_name}, 速度: {speed_kmh:.1f} km/h")
             
-            # 保存剩余数据
+            # 保存剩余数据（使用最后一帧的命令，而不是初始命令）
             if segment_count > 0:
                 print(f"💾 保存剩余数据（{segment_count} 帧）...")
-                self._save_segment_auto(current_segment_data, save_path, current_command)
+                self._save_segment_auto(current_segment_data, save_path, current_cmd)
             
             print(f"✅ 路线收集完成！总帧数: {collected_frames}")
             self.total_frames_collected += collected_frames

@@ -35,9 +35,8 @@ class H5DataVisualizer:
         self.playing = False
         self.play_speed = 20  # 毫秒/帧
         
-        # 命令名称映射
+        # 命令名称映射（只有4个有效命令）
         self.command_names = {
-            0.0: 'VOID',
             2.0: 'Follow',
             3.0: 'Left',
             4.0: 'Right',
@@ -46,7 +45,6 @@ class H5DataVisualizer:
         
         # 命令颜色映射
         self.command_colors = {
-            0.0: (128, 128, 128),  # 灰色
             2.0: (100, 255, 100),  # 绿色
             3.0: (100, 100, 255),  # 蓝色
             4.0: (255, 100, 100),  # 红色
