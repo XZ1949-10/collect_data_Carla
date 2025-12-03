@@ -457,7 +457,7 @@ def main():
     # 路线规划参数
     parser.add_argument('--spawn-index', type=int, default=1,
                         help='起点索引')
-    parser.add_argument('--dest-index', type=int, default=41,
+    parser.add_argument('--dest-index', type=int, default=193,
                         help='终点索引')
     parser.add_argument('--list-spawns', action='store_true',
                         help='列出所有生成点位置后退出')
