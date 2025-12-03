@@ -51,12 +51,20 @@ class DataVerifier:
                     h5_files.append(os.path.join(root, f))
         return h5_files
         
-    def verify_all(self):
-        """验证所有数据文件"""
+    def verify_all(self, delete_invalid=False, min_frames=200):
+        """
+        验证所有数据文件
+        
+        参数:
+            delete_invalid (bool): 是否删除不满足条件的文件
+            min_frames (int): 最小帧数要求
+        """
         print("\n" + "="*70)
         print("🔍 数据验证工具")
         print("="*70)
-        print(f"数据路径: {self.data_path}\n")
+        print(f"数据路径: {self.data_path}")
+        print(f"最小帧数要求: {min_frames}")
+        print(f"模式: {'🗑️ 自动删除无效文件' if delete_invalid else '👁️ 仅预览（不删除）'}\n")
         
         if not os.path.exists(self.data_path):
             print(f"❌ 数据路径不存在: {self.data_path}")
@@ -79,14 +87,17 @@ class DataVerifier:
         throttle_stats = []
         brake_stats = []
         file_sizes = []
-        corrupted_files = []
+        corrupted_files = []  # [(filepath, reason)]
         warning_files = []
-        incomplete_files = []  # 不足200帧的文件
+        incomplete_files = []  # [(filepath, frame_count)]
+        deleted_files = []  # [(filepath, reason)]
         
         print("正在验证数据文件...\n")
         
         for idx, filepath in enumerate(h5_files):
             filename = os.path.basename(filepath)
+            should_delete = False
+            delete_reason = []
             
             try:
                 with h5py.File(filepath, 'r') as f:
@@ -105,29 +116,20 @@ class DataVerifier:
                     
                     # 统计
                     num_frames = rgb.shape[0]
-                    total_frames += num_frames
                     
                     # 命令统计（索引24）
                     commands = targets[:, 24]
-                    for cmd in np.unique(commands):
-                        cmd_count = np.sum(commands == cmd)
-                        command_stats[int(cmd)] += cmd_count
                     
                     # 速度统计（索引10）
                     speeds = targets[:, 10]
-                    speed_stats.extend(speeds.tolist())
                     
                     # 控制信号统计（索引0, 1, 2）
                     steers = targets[:, 0]
                     throttles = targets[:, 1]
                     brakes = targets[:, 2]
-                    steer_stats.extend(steers.tolist())
-                    throttle_stats.extend(throttles.tolist())
-                    brake_stats.extend(brakes.tolist())
                     
                     # 文件大小
                     file_size = os.path.getsize(filepath) / 1024 / 1024  # MB
-                    file_sizes.append(file_size)
                     
                     # 数据质量检查
                     warnings = []
@@ -135,6 +137,8 @@ class DataVerifier:
                     # 图像亮度检查
                     if rgb.mean() < 5:
                         warnings.append("图像过暗")
+                        delete_reason.append("图像过暗(mean<5)")
+                        should_delete = True
                     
                     # 速度异常检查
                     if np.max(speeds) > 150:
@@ -156,24 +160,55 @@ class DataVerifier:
                     invalid_cmds = set(commands.astype(int)) - valid_commands
                     if invalid_cmds:
                         warnings.append(f"无效命令值: {invalid_cmds}")
+                        delete_reason.append(f"无效命令值: {invalid_cmds}")
+                        should_delete = True
                     
-                    # 帧数检查（标准应为200帧）
-                    if num_frames < 200:
-                        incomplete_files.append((filename, num_frames))
+                    # 帧数检查
+                    if num_frames < min_frames:
+                        incomplete_files.append((filepath, num_frames))
+                        delete_reason.append(f"帧数不足({num_frames}<{min_frames})")
+                        should_delete = True
                     
                     if warnings:
                         warning_files.append((filename, warnings))
                         for w in warnings:
                             print(f"  ⚠️  {filename}: {w}")
                     
-                    # 进度显示
-                    if (idx + 1) % 10 == 0 or idx == len(h5_files) - 1:
-                        progress = (idx + 1) / len(h5_files) * 100
-                        print(f"  进度: {progress:.1f}% ({idx + 1}/{len(h5_files)})")
+                    # 如果文件有效，统计数据
+                    if not should_delete:
+                        total_frames += num_frames
+                        for cmd in np.unique(commands):
+                            cmd_count = np.sum(commands == cmd)
+                            command_stats[int(cmd)] += cmd_count
+                        speed_stats.extend(speeds.tolist())
+                        steer_stats.extend(steers.tolist())
+                        throttle_stats.extend(throttles.tolist())
+                        brake_stats.extend(brakes.tolist())
+                        file_sizes.append(file_size)
                 
             except Exception as e:
                 print(f"  ❌ {filename}: 验证失败 - {e}")
-                corrupted_files.append(filename)
+                corrupted_files.append((filepath, str(e)))
+                should_delete = True
+                delete_reason.append(f"文件损坏: {e}")
+            
+            # 删除不满足条件的文件
+            if should_delete and delete_invalid:
+                try:
+                    os.remove(filepath)
+                    reason_str = "; ".join(delete_reason)
+                    deleted_files.append((filepath, reason_str))
+                    print(f"  🗑️  已删除: {filename} - 原因: {reason_str}")
+                except Exception as e:
+                    print(f"  ❌ 删除失败 {filename}: {e}")
+            elif should_delete and not delete_invalid:
+                reason_str = "; ".join(delete_reason)
+                deleted_files.append((filepath, reason_str))  # 记录但不删除
+            
+            # 进度显示
+            if (idx + 1) % 10 == 0 or idx == len(h5_files) - 1:
+                progress = (idx + 1) / len(h5_files) * 100
+                print(f"  进度: {progress:.1f}% ({idx + 1}/{len(h5_files)})")
         
         # 打印统计报告
         self._print_statistics(
@@ -205,7 +240,9 @@ class DataVerifier:
             corrupted_files,
             warning_files,
             incomplete_files,
-            len(h5_files)
+            len(h5_files),
+            deleted_files,
+            delete_invalid
         )
     
     def _print_statistics(self, total_frames, command_stats, speed_stats, 
@@ -371,7 +408,8 @@ class DataVerifier:
     
     def _save_verification_report(self, total_frames, command_stats, speed_stats, 
                                   steer_stats, throttle_stats, brake_stats,
-                                  file_sizes, corrupted_files, warning_files, incomplete_files, total_files):
+                                  file_sizes, corrupted_files, warning_files, incomplete_files, total_files,
+                                  deleted_files=None, delete_enabled=False):
         """保存验证报告到JSON"""
         report = {
             'verification_time': __import__('datetime').datetime.now().isoformat(),
@@ -426,6 +464,92 @@ class DataVerifier:
             json.dump(report, f, indent=4, ensure_ascii=False)
         
         print(f"✅ 验证报告已保存: {report_path}")
+        
+        # 保存删除报告
+        if deleted_files:
+            self._save_deletion_report(deleted_files, delete_enabled)
+    
+    def _save_deletion_report(self, deleted_files, delete_enabled=False):
+        """保存删除报告到JSON和TXT"""
+        timestamp = __import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # 按删除原因分类
+        reason_categories = defaultdict(list)
+        for filepath, reason in deleted_files:
+            # 解析原因
+            if '帧数不足' in reason:
+                reason_categories['帧数不足'].append({'file': filepath, 'detail': reason})
+            elif '图像过暗' in reason:
+                reason_categories['图像过暗'].append({'file': filepath, 'detail': reason})
+            elif '无效命令值' in reason:
+                reason_categories['无效命令值'].append({'file': filepath, 'detail': reason})
+            elif '文件损坏' in reason:
+                reason_categories['文件损坏'].append({'file': filepath, 'detail': reason})
+            else:
+                reason_categories['其他'].append({'file': filepath, 'detail': reason})
+        
+        # JSON报告
+        deletion_report = {
+            'report_time': __import__('datetime').datetime.now().isoformat(),
+            'delete_enabled': delete_enabled,
+            'status': '已删除' if delete_enabled else '待删除（预览模式）',
+            'total_invalid_files': len(deleted_files),
+            'summary': {category: len(files) for category, files in reason_categories.items()},
+            'details': dict(reason_categories)
+        }
+        
+        json_path = os.path.join(self.data_path, f'deletion_report_{timestamp}.json')
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(deletion_report, f, indent=4, ensure_ascii=False)
+        
+        # TXT报告（更易读）
+        txt_path = os.path.join(self.data_path, f'deletion_report_{timestamp}.txt')
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write("="*70 + "\n")
+            f.write("📋 数据文件删除报告\n")
+            f.write("="*70 + "\n\n")
+            f.write(f"报告时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"数据路径: {self.data_path}\n")
+            f.write(f"操作状态: {'✅ 已删除' if delete_enabled else '⚠️ 预览模式（未实际删除）'}\n")
+            f.write(f"不满足条件的文件总数: {len(deleted_files)}\n\n")
+            
+            f.write("-"*70 + "\n")
+            f.write("📊 按原因分类统计\n")
+            f.write("-"*70 + "\n")
+            for category, files in reason_categories.items():
+                f.write(f"  • {category}: {len(files)} 个文件\n")
+            f.write("\n")
+            
+            f.write("-"*70 + "\n")
+            f.write("📝 详细列表\n")
+            f.write("-"*70 + "\n\n")
+            
+            for category, files in reason_categories.items():
+                f.write(f"\n【{category}】({len(files)} 个文件)\n")
+                f.write("-"*40 + "\n")
+                for item in files:
+                    f.write(f"  文件: {item['file']}\n")
+                    f.write(f"  原因: {item['detail']}\n")
+                    f.write("\n")
+            
+            f.write("="*70 + "\n")
+            f.write("报告结束\n")
+            f.write("="*70 + "\n")
+        
+        print(f"✅ 删除报告已保存:")
+        print(f"   JSON: {json_path}")
+        print(f"   TXT:  {txt_path}")
+        
+        # 打印删除摘要
+        print(f"\n" + "="*70)
+        print(f"🗑️  删除报告摘要")
+        print("="*70)
+        print(f"状态: {'✅ 已删除' if delete_enabled else '⚠️ 预览模式（使用 --delete-invalid 参数实际删除）'}")
+        print(f"不满足条件的文件总数: {len(deleted_files)}")
+        print(f"\n按原因分类:")
+        for category, files in reason_categories.items():
+            print(f"  • {category}: {len(files)} 个文件")
+        print("="*70 + "\n")
 
 
 def main():
@@ -435,11 +559,16 @@ def main():
     parser = argparse.ArgumentParser(description='验证CARLA收集的数据')
     parser.add_argument('--data-path', default='E://carla_data', 
                        help='数据目录路径')
+    parser.add_argument('--preview-only', action='store_true',
+                       help='仅预览不满足条件的文件，不实际删除')
+    parser.add_argument('--min-frames', type=int, default=200,
+                       help='最小帧数要求，默认200')
     
     args = parser.parse_args()
     
     verifier = DataVerifier(args.data_path)
-    verifier.verify_all()
+    # 默认删除不满足条件的文件，除非指定 --preview-only
+    verifier.verify_all(delete_invalid=not args.preview_only, min_frames=args.min_frames)
 
 
 if __name__ == '__main__':
