@@ -19,12 +19,13 @@ from collections import defaultdict
 class H5DataVisualizer:
     """H5数据可视化器"""
     
-    def __init__(self, h5_file_path):
+    def __init__(self, h5_file_path, auto_start=False):
         """
         初始化可视化器
         
         参数:
             h5_file_path (str): H5文件路径
+            auto_start (bool): 是否自动开始播放（不需要按空格）
         """
         self.h5_file_path = h5_file_path
         self.data = None
@@ -32,7 +33,7 @@ class H5DataVisualizer:
         self.targets_data = None
         self.current_frame = 0
         self.total_frames = 0
-        self.playing = False
+        self.playing = auto_start  # 如果auto_start为True，直接开始播放
         self.play_speed = 20  # 毫秒/帧
         self.auto_next = False  # 是否在播放完后自动跳到下一个文件
         
@@ -410,18 +411,20 @@ class H5DataVisualizer:
 class H5DataBrowser:
     """H5数据浏览器（浏览目录中的所有H5文件）"""
     
-    def __init__(self, data_dir, auto_play=False):
+    def __init__(self, data_dir, auto_play=False, auto_start=False):
         """
         初始化浏览器
         
         参数:
             data_dir (str): 数据目录
             auto_play (bool): 是否自动连续播放所有文件
+            auto_start (bool): 是否自动开始播放（不需要按空格）
         """
         self.data_dir = data_dir
         self.h5_files = []
         self.current_file_idx = 0
         self.auto_play = auto_play
+        self.auto_start = auto_start
         
     def scan_directory(self):
         """扫描目录中的H5文件"""
@@ -463,7 +466,7 @@ class H5DataBrowser:
             print(f"  {os.path.basename(current_file)}")
             
             # 可视化当前文件
-            visualizer = H5DataVisualizer(current_file)
+            visualizer = H5DataVisualizer(current_file, auto_start=self.auto_start)
             visualizer.auto_next = self.auto_play  # 传递自动播放标志
             if visualizer.load_data():
                 result = visualizer.visualize()
@@ -530,10 +533,11 @@ def main():
         print("\n请选择模式:")
         print("  [1] 查看单个H5文件")
         print("  [2] 浏览目录中的所有H5文件（手动切换）")
-        print("  [3] 自动连续播放目录中的所有H5文件")
+        print("  [3] 自动连续播放目录中的所有H5文件（需按空格开始）")
+        print("  [4] 自动连续播放目录中的所有H5文件（直接开始播放）")
         print("  [Q] 退出")
         
-        choice = input("\n请输入选项 [1-3/Q]: ").strip()
+        choice = input("\n请输入选项 [1-4/Q]: ").strip()
         
         if choice == '1':
             file_path = input("请输入H5文件路径: ").strip()
@@ -551,7 +555,14 @@ def main():
             data_dir = input("请输入数据目录路径（默认: ./auto_collected_data）: ").strip()
             if not data_dir:
                 data_dir = './auto_collected_data'
-            browser = H5DataBrowser(data_dir, auto_play=True)
+            browser = H5DataBrowser(data_dir, auto_play=True, auto_start=False)
+            if browser.scan_directory():
+                browser.browse()
+        elif choice == '4':
+            data_dir = input("请输入数据目录路径（默认: ./auto_collected_data）: ").strip()
+            if not data_dir:
+                data_dir = './auto_collected_data'
+            browser = H5DataBrowser(data_dir, auto_play=True, auto_start=True)
             if browser.scan_directory():
                 browser.browse()
         else:

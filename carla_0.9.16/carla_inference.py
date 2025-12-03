@@ -256,7 +256,11 @@ class CarlaInference:
                 if not self.sensor_manager.has_image():
                     continue
                 
-                # 获取导航命令
+                # 【重要】调用 run_step 更新 LocalPlanner 状态
+                # 这样 target_road_option 才会正确更新
+                self.navigation_planner.run_step()
+                
+                # 获取导航命令（现在使用与数据收集一致的方式）
                 self.current_command = self.navigation_planner.get_navigation_command(self.vehicle)
                 
                 # 调试：打印命令信息

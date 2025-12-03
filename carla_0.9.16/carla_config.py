@@ -27,7 +27,7 @@ SPEED_NORMALIZATION_MPS = 25.0
 MAX_SPEED_KMH = SPEED_NORMALIZATION_MPS   # 用于显示
 
 # 最高速度限制（后处理器使用）
-MAX_SPEED_LIMIT_MPS = 5.0  # 最高速度限制（m/s），默认 10 m/s ≈ 36 km/h
+MAX_SPEED_LIMIT_MPS = 25.0  # 最高速度限制（m/s），默认 10 m/s ≈ 36 km/h
 MAX_SPEED_LIMIT_KMH = MAX_SPEED_LIMIT_MPS   # 用于显示，约 36 km/h
 
 # ==================== 后处理器默认配置 ====================

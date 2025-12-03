@@ -46,8 +46,8 @@ class PostProcessor:
         self.turning_throttle_scale = 0.2     # 转弯时油门缩放因子
         
         # 避免停车参数（基于原始实现，使用配置文件中的速度归一化因子）
-        self.avoid_stopping_min_speed = 2.0   # 当前速度阈值 (km/h)
-        self.avoid_stopping_pred_speed = 3.0  # 预测速度阈值 (km/h)
+        self.avoid_stopping_min_speed = 5.0   # 当前速度阈值 (km/h)
+        self.avoid_stopping_pred_speed = 5.0  # 预测速度阈值 (km/h)
         self.avoid_stopping_target_speed = 5.6 # 目标启动速度 (km/h)
         self.turning_steer_scale = 2.0
         self.speed_normalization = SPEED_NORMALIZATION_MPS  # 使用配置文件中的值
@@ -132,25 +132,3 @@ class PostProcessor:
         
         return throttle, brake
     
-    # def print_config(self):
-    #     """打印当前配置"""
-    #     print("\n" + "="*60)
-    #     print("后处理器配置")
-    #     print("="*60)
-        
-    #     print("\n功能开关:")
-    #     print(f"  刹车去噪: {'开启' if self.enable_brake_denoising else '关闭'}")
-    #     print(f"  油门刹车互斥: {'开启' if self.enable_throttle_brake_mutex else '关闭'}")
-    #     print(f"  速度限制: {'开启' if self.enable_speed_limit else '关闭'}")
-    #     print(f"  转弯减速: {'开启' if self.enable_turning_slowdown else '关闭'}")
-    #     print(f"  避免停车: {'开启' if self.enable_avoid_stopping else '关闭'}")
-        
-    #     print("\n参数设置:")
-    #     print(f"  刹车噪声阈值: {self.brake_noise_threshold}")
-    #     print(f"  最高速度限制: {self.max_speed_limit_mps:.1f} m/s ({self.max_speed_limit_mps * 3.6:.1f} km/h)")
-    #     print(f"  转弯方向盘阈值: {self.turning_steer_threshold}")
-    #     print(f"  转弯油门缩放: {self.turning_throttle_scale}")
-    #     print(f"  避免停车最小速度: {self.avoid_stopping_min_speed} km/h")
-    #     print(f"  避免停车预测速度: {self.avoid_stopping_pred_speed} km/h")
-    #     print(f"  避免停车目标速度: {self.avoid_stopping_target_speed} km/h")
-    #     print("="*60 + "\n")

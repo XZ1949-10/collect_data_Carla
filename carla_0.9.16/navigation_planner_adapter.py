@@ -3,8 +3,10 @@
 '''
 作者: AI Assistant
 日期: 2025-11-25
+更新: 2025-12-03
 说明: NavigationPlanner 适配器
-      使用 agents 模块的 GlobalRoutePlanner 替代原有的 NavigationPlanner
+      使用 BasicAgent + LocalPlanner 获取导航命令
+      与数据收集时的命令获取方式保持一致
 '''
 
 import random
@@ -20,37 +22,49 @@ if project_root not in sys.path:
 
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 from agents.navigation.local_planner import RoadOption
+from agents.navigation.basic_agent import BasicAgent
 
 
 class NavigationPlannerAdapter:
     """
     NavigationPlanner 适配器类
     
-    将 agents 模块的 GlobalRoutePlanner 适配为原有 NavigationPlanner 的接口
-    保持与原代码的兼容性
+    使用 BasicAgent + LocalPlanner 来获取导航命令，
+    与数据收集时的命令获取方式保持一致，确保推理时命令与训练数据一致。
+    
+    关键改进（2025-12-03）：
+    - 使用 BasicAgent 内部的 LocalPlanner.target_road_option 获取命令
+    - 与 command_based_data_collection.py 中的 _get_navigation_command() 保持一致
     """
     
-    def __init__(self, world, sampling_resolution=2.0):
+    def __init__(self, world, sampling_resolution=2.0, target_speed=20.0):
         """
         初始化导航规划器
         
         参数:
             world: carla.World 实例
             sampling_resolution: 路径采样分辨率（米）
+            target_speed: 目标速度（km/h），用于 BasicAgent
         """
         self._world = world
         self._map = world.get_map()
         self._sampling_resolution = sampling_resolution
+        self._target_speed = target_speed
         
-        # 创建全局路径规划器
+        # 创建全局路径规划器（用于路线信息计算）
         self._global_planner = GlobalRoutePlanner(self._map, sampling_resolution)
         
-        # 路线相关
+        # BasicAgent（用于获取导航命令，与数据收集一致）
+        self._agent = None  # 在 set_destination 时初始化
+        self._vehicle = None
+        
+        # 路线相关（用于进度计算）
         self._route = []  # 路线：[(waypoint, road_option), ...]
         self._current_waypoint_index = 0
         self._destination = None
         
         # 命令映射：RoadOption -> 训练数据命令编码
+        # 与 command_based_data_collection.py 完全一致
         self._road_option_to_command = {
             RoadOption.LEFT: 3,           # 左转
             RoadOption.RIGHT: 4,          # 右转
@@ -62,10 +76,14 @@ class NavigationPlannerAdapter:
         }
         
         print(f"NavigationPlannerAdapter 初始化完成 (采样分辨率: {sampling_resolution}m)")
+        print(f"  ✅ 使用 BasicAgent + LocalPlanner 获取命令（与数据收集一致）")
     
     def set_destination(self, vehicle, destination):
         """
         设置目的地并规划路线
+        
+        使用 BasicAgent 来管理路线和获取导航命令，
+        与数据收集时的方式保持一致。
         
         参数:
             vehicle: carla.Vehicle 实例
@@ -75,10 +93,10 @@ class NavigationPlannerAdapter:
             bool: 是否成功规划路线
         """
         try:
-            # 获取起点和终点
+            self._vehicle = vehicle
             start_location = vehicle.get_location()
             
-            # 使用全局规划器规划路线
+            # 使用全局规划器规划路线（用于进度计算）
             self._route = self._global_planner.trace_route(start_location, destination)
             
             if not self._route or len(self._route) == 0:
@@ -88,14 +106,50 @@ class NavigationPlannerAdapter:
             self._destination = destination
             self._current_waypoint_index = 0
             
+            # 创建 BasicAgent（与数据收集时的配置一致）
+            opt_dict = {
+                'target_speed': self._target_speed,
+                'sampling_resolution': 1.0,  # 与数据收集一致
+                'lateral_control_dict': {
+                    'K_P': 1.5,
+                    'K_I': 0.0,
+                    'K_D': 0.05,
+                    'dt': 0.05
+                },
+                'longitudinal_control_dict': {
+                    'K_P': 1.0,
+                    'K_I': 0.05,
+                    'K_D': 0.0,
+                    'dt': 0.05
+                },
+                'max_steering': 0.8,
+                'max_throttle': 0.75,
+                'max_brake': 0.5,
+                'base_min_distance': 2.0,
+                'distance_ratio': 0.3
+            }
+            
+            self._agent = BasicAgent(
+                vehicle,
+                target_speed=self._target_speed,
+                opt_dict=opt_dict,
+                map_inst=self._map
+            )
+            
+            # 设置目的地（BasicAgent 会自动规划路线并管理 LocalPlanner）
+            self._agent.set_destination(destination, start_location=start_location)
+            
             # 计算路线总长度
             total_distance = self._calculate_route_length()
             
             print(f"✓ 路线规划成功：{len(self._route)} 个路点，总长度 {total_distance:.1f}m")
+            print(f"  ✅ BasicAgent 已创建并设置目的地")
             return True
             
         except Exception as e:
             print(f"⚠️ 路线规划失败: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def set_random_destination(self, vehicle):
@@ -135,25 +189,61 @@ class NavigationPlannerAdapter:
         """
         获取当前导航命令
         
+        【重要】使用与数据收集完全一致的方式获取命令：
+        从 BasicAgent 的 LocalPlanner.target_road_option 获取
+        
+        这与 command_based_data_collection.py 中的 _get_navigation_command() 方法一致
+        
         参数:
             vehicle: carla.Vehicle 实例
             
         返回:
             int: 命令编码 (2=跟车, 3=左转, 4=右转, 5=直行)
         """
-        if not self._route or len(self._route) == 0:
+        # 如果没有 BasicAgent，返回默认命令
+        if self._agent is None:
             return 2  # 默认返回跟车命令
         
-        # 更新当前路点索引
-        self._update_current_waypoint(vehicle)
-        
-        # 获取当前路点的道路选项
-        if self._current_waypoint_index < len(self._route):
-            _, road_option = self._route[self._current_waypoint_index]
+        try:
+            # 【关键】从 BasicAgent 的 LocalPlanner 获取 RoadOption
+            # 这与数据收集时的方式完全一致
+            local_planner = self._agent.get_local_planner()
+            if local_planner is None:
+                return 2
+            
+            # 获取当前目标路点的 RoadOption
+            road_option = local_planner.target_road_option
+            if road_option is None:
+                road_option = RoadOption.LANEFOLLOW
+            
+            # 映射到数值命令
             command = self._road_option_to_command.get(road_option, 2)
             return command
+            
+        except Exception as e:
+            print(f"⚠️ 获取导航命令失败: {e}")
+            return 2  # 默认返回跟车命令
+    
+    def run_step(self):
+        """
+        执行一步导航（更新 LocalPlanner 状态）
         
-        return 2  # 默认返回跟车命令
+        【重要】必须调用此方法来更新 LocalPlanner 的状态，
+        否则 target_road_option 不会更新
+        
+        返回:
+            carla.VehicleControl: 控制命令（可选择是否使用）
+        """
+        if self._agent is None:
+            return None
+        
+        try:
+            # 调用 BasicAgent.run_step() 来更新 LocalPlanner 状态
+            control = self._agent.run_step()
+            return control
+        except Exception as e:
+            print(f"⚠️ run_step 失败: {e}")
+            return None
     
     def get_route_info(self, vehicle):
         """
@@ -219,6 +309,8 @@ class NavigationPlannerAdapter:
         """
         检查是否到达目的地
         
+        使用 BasicAgent.done() 方法，与数据收集一致
+        
         参数:
             vehicle: carla.Vehicle 实例
             threshold: 距离阈值（米）
@@ -226,6 +318,14 @@ class NavigationPlannerAdapter:
         返回:
             bool: 是否到达目的地
         """
+        # 优先使用 BasicAgent 的 done() 方法
+        if self._agent is not None:
+            try:
+                return self._agent.done()
+            except Exception:
+                pass
+        
+        # 回退方案：检查距离
         if not self._route or len(self._route) == 0:
             return True
         
@@ -240,6 +340,8 @@ class NavigationPlannerAdapter:
     def _update_current_waypoint(self, vehicle):
         """
         更新当前路点索引（找到最近的路点）
+        
+        用于进度计算，不影响命令获取
         
         参数:
             vehicle: carla.Vehicle 实例
