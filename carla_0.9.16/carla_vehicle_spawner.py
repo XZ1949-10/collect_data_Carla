@@ -10,8 +10,7 @@ import random
 from carla_config import (
     MAX_SPAWN_ATTEMPTS, 
     SPAWN_STABILIZE_TICKS, 
-    SPAWN_STABILIZE_DELAY,
-    COLLISION_SEVERE_THRESHOLD
+    SPAWN_STABILIZE_DELAY
 )
 
 
@@ -96,24 +95,3 @@ class VehicleSpawner:
         print(f"车辆实际位置: ({actual_location.x:.1f}, {actual_location.y:.1f}, {actual_location.z:.1f})")
         
         return vehicle
-    
-    def check_initial_collision(self, sensor_manager):
-        """
-        检查初始碰撞
-        
-        参数:
-            sensor_manager: SensorManager 对象
-            
-        返回:
-            bool: 是否有严重碰撞
-        """
-        initial_collisions = len(sensor_manager.collision_history)
-        if initial_collisions > 0:
-            max_collision = max(sensor_manager.collision_history)
-            print(f"⚠️ 检测到初始碰撞: {initial_collisions}次, 最大强度: {max_collision:.2f}")
-            
-            if max_collision > COLLISION_SEVERE_THRESHOLD:
-                print("⚠️ 生成位置有严重碰撞")
-                return True
-        
-        return False

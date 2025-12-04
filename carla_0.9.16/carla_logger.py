@@ -122,13 +122,8 @@ class CarlaLogger:
               f"Brk: {control_result['brake']:.3f} | "
               f"FPS: {fps:.1f}")
               
-    def print_statistics(self, sensor_manager):
-        """
-        打印统计信息
-        
-        参数:
-            sensor_manager: SensorManager 对象
-        """
+    def print_statistics(self):
+        """打印统计信息"""
         if self.frame_count == 0:
             return
             
@@ -137,9 +132,6 @@ class CarlaLogger:
         print(f"{'='*60}")
         print(f"总帧数: {self.frame_count}")
         print(f"平均推理时间: {self.total_inference_time/self.frame_count*1000:.2f} ms")
-        print(f"碰撞次数: {len(sensor_manager.collision_history)}")
-        if sensor_manager.collision_history:
-            print(f"平均碰撞强度: {np.mean(sensor_manager.collision_history):.2f}")
         print(f"{'='*60}\n")
     
     def reset(self):

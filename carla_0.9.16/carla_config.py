@@ -23,11 +23,11 @@ CAMERA_PITCH = -15
 # ==================== 速度参数 ====================
 # 注意：必须与训练时保持一致！
 # 这个其实就是 25km/h
-SPEED_NORMALIZATION_MPS = 25.0
+SPEED_NORMALIZATION_MPS = 22.0
 MAX_SPEED_KMH = SPEED_NORMALIZATION_MPS   # 用于显示
 
 # 最高速度限制（后处理器使用）
-MAX_SPEED_LIMIT_MPS = 25.0  # 最高速度限制（m/s），默认 10 m/s ≈ 36 km/h
+MAX_SPEED_LIMIT_MPS = 22.0  # 最高速度限制（km/h），
 MAX_SPEED_LIMIT_KMH = MAX_SPEED_LIMIT_MPS   # 用于显示，约 36 km/h
 
 # ==================== 后处理器默认配置 ====================
@@ -64,7 +64,6 @@ COMMAND_NAMES_EN = {
 MAX_SPAWN_ATTEMPTS = 10           # 最大生成尝试次数
 SPAWN_STABILIZE_TICKS = 3         # 生成后等待稳定的tick数
 SPAWN_STABILIZE_DELAY = 0.05      # 每个tick之间的延迟（秒）
-COLLISION_SEVERE_THRESHOLD = 1000 # 严重碰撞强度阈值
 
 # ==================== 路线规划参数 ====================
 ROUTE_SAMPLING_RESOLUTION = 2.0   # 路径采样分辨率（米）

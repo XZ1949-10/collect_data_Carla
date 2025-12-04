@@ -43,13 +43,13 @@ class PostProcessor:
         self.brake_noise_threshold = 0.1      # 刹车噪声阈值
         self.max_speed_limit_mps = MAX_SPEED_LIMIT_MPS  # 最高速度限制（m/s），从配置文件读取
         self.turning_steer_threshold = 0.1   # 转弯方向盘阈值
-        self.turning_throttle_scale = 0.2     # 转弯时油门缩放因子
+        self.turning_throttle_scale = 0.4     # 转弯时油门缩放因子
         
         # 避免停车参数（基于原始实现，使用配置文件中的速度归一化因子）
         self.avoid_stopping_min_speed = 5.0   # 当前速度阈值 (km/h)
         self.avoid_stopping_pred_speed = 5.0  # 预测速度阈值 (km/h)
         self.avoid_stopping_target_speed = 5.6 # 目标启动速度 (km/h)
-        self.turning_steer_scale = 3.0
+        self.turning_steer_scale = 2.0
         self.speed_normalization = SPEED_NORMALIZATION_MPS  # 使用配置文件中的值
     
     def process(self, steer, throttle, brake, speed_normalized, pred_speed_normalized=None):
@@ -66,21 +66,21 @@ class PostProcessor:
         返回:
             tuple: (steer, throttle, brake) 处理后的控制信号
         """
-        # 规则1: 刹车去噪 - 避免误刹车
-        if self.enable_brake_denoising:
-            if brake < self.brake_noise_threshold:
-                brake = 0.0
+        # # # 规则1: 刹车去噪 - 避免误刹车
+        # if self.enable_brake_denoising:
+        #     if brake < self.brake_noise_threshold:
+        #         brake = 0.0
         
-        # 规则2: 油门刹车互斥 - 如果油门更大，则不刹车
-        if self.enable_throttle_brake_mutex:
-            if throttle > brake:
-                brake = 0.0
+        # # 规则2: 油门刹车互斥 - 如果油门更大，则不刹车
+        # if self.enable_throttle_brake_mutex:
+        #     if throttle > brake:
+        #         brake = 0.0
         
         # 规则3: 速度限制 - 当速度超过配置的最高速度时，关闭油门
         if self.enable_speed_limit:
             # if speed_normalized * self.speed_normalization > self.max_speed_limit_mps and brake == 0.0:
             if speed_normalized * self.speed_normalization > self.max_speed_limit_mps:
-                throttle = 0.0
+                throttle = throttle*0.4
         
         # 规则4: 转弯减速 - 大转向时降低油门
         if self.enable_turning_slowdown:

@@ -50,7 +50,7 @@ class ModelPredictor:
         
         参数:
             img_tensor: torch.Tensor，预处理后的图像
-            speed: float，归一化的速度值（除以25.0，与训练时一致）
+            speed: float，归一化的速度值（除以25.0 KM/H，与训练时一致）
             current_command: int，当前导航命令 (2-5)
             
         返回:
@@ -88,7 +88,7 @@ class ModelPredictor:
         
         # 应用后处理（如果启用）
         if self.post_processor is not None:
-            # 注意：系统现在统一使用25.0作为速度归一化因子，与训练时一致
+            # 注意：系统现在统一使用25.KM/H 作为速度归一化因子，与训练时一致
             steer, throttle, brake = self.post_processor.process(
                 steer, throttle, brake,
                 speed,

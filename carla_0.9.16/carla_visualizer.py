@@ -40,7 +40,7 @@ class CarlaVisualizer:
         vis_image = cv2.resize(vis_image, (VISUALIZATION_WIDTH, VISUALIZATION_HEIGHT))
         
         # 计算实际速度（km/h）
-        actual_speed_kmh = actual_speed * SPEED_NORMALIZATION_MPS * 3.6
+        actual_speed_kmh = actual_speed * SPEED_NORMALIZATION_MPS 
         
         # 获取英文命令名
         command_en = COMMAND_NAMES_EN.get(route_info['current_command'], 'Unknown')

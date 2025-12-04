@@ -52,7 +52,7 @@ class VehicleController:
         velocity = vehicle.get_velocity()  # 返回 carla.Vector3D
         
         # 计算速度大小（欧几里得距离）
-        speed_mps = (velocity.x**2 + velocity.y**2 + velocity.z**2)**0.5
+        speed_mps = 3.6*(velocity.x**2 + velocity.y**2 + velocity.z**2)**0.5
         
         # 归一化
         return speed_mps / speed_normalization_mps

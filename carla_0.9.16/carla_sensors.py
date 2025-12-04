@@ -2,7 +2,7 @@
 # coding=utf-8
 '''
 CARLA 传感器管理模块
-负责摄像头和碰撞传感器的创建和管理
+负责摄像头的创建和管理
 '''
 
 import numpy as np
@@ -28,14 +28,21 @@ class SensorManager:
         
         # 传感器对象
         self.camera = None
-        self.collision_sensor = None
         
         # 数据缓冲区
         self.image_buffer = deque(maxlen=1)
-        self.collision_history = []
         
     def setup_camera(self):
         """设置RGB摄像头"""
+        # 如果已存在摄像头，先销毁
+        if self.camera is not None:
+            try:
+                self.camera.stop()
+                self.camera.destroy()
+            except Exception:
+                pass
+            self.camera = None
+        
         print("正在设置摄像头...")
         
         blueprint_library = self.world.get_blueprint_library()
@@ -65,25 +72,6 @@ class SensorManager:
         
         print("摄像头设置完成！")
         
-    def setup_collision_sensor(self):
-        """设置碰撞传感器"""
-        print("正在设置碰撞传感器...")
-        
-        blueprint_library = self.world.get_blueprint_library()
-        collision_bp = blueprint_library.find('sensor.other.collision')
-        
-        # 附加到车辆
-        self.collision_sensor = self.world.spawn_actor(
-            collision_bp,
-            carla.Transform(),
-            attach_to=self.vehicle
-        )
-        
-        # 注册回调函数
-        self.collision_sensor.listen(lambda event: self._on_collision(event))
-        
-        print("碰撞传感器设置完成！")
-        
     def _on_camera_update(self, image):
         """摄像头图像回调函数"""
         # 转换为numpy数组
@@ -94,17 +82,6 @@ class SensorManager:
         
         # 存储到缓冲区
         self.image_buffer.append(array)
-        
-    def _on_collision(self, event):
-        """碰撞回调函数"""
-        impulse = event.normal_impulse
-        intensity = np.sqrt(impulse.x**2 + impulse.y**2 + impulse.z**2)
-        self.collision_history.append(intensity)
-        print(f"⚠️ 检测到碰撞！强度: {intensity:.2f}")
-        
-    def clear_collision_history(self):
-        """清空碰撞历史"""
-        self.collision_history = []
         
     def get_latest_image(self):
         """获取最新图像"""
@@ -121,8 +98,4 @@ class SensorManager:
         if self.camera is not None:
             self.camera.stop()
             self.camera.destroy()
-            
-        if self.collision_sensor is not None:
-            self.collision_sensor.stop()
-            self.collision_sensor.destroy()
 

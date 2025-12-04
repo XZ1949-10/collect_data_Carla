@@ -161,31 +161,15 @@ class CarlaInference:
             destination_index (int): 终点索引，None表示随机
             max_retries (int): 最大重试次数
         """
-        # 检查重试次数
-        if max_retries <= 0:
-            raise RuntimeError("无法生成车辆：已达到最大重试次数")
-        
         # 生成车辆
         self.vehicle = self.vehicle_spawner.spawn(vehicle_filter, spawn_index)
         
         # 创建传感器管理器
         self.sensor_manager = SensorManager(self.world, self.vehicle)
         
-        # 设置碰撞传感器
-        self.sensor_manager.setup_collision_sensor()
-        
         # 等待传感器初始化
         for _ in range(3):
             self.world.tick()
-        
-        # 检测初始碰撞
-        if self.vehicle_spawner.check_initial_collision(self.sensor_manager):
-            self.vehicle.destroy()
-            print(f"尝试重新生成车辆... (剩余重试次数: {max_retries-1})")
-            return self.spawn_vehicle(vehicle_filter, spawn_index, destination_index, max_retries-1)
-        
-        # 清空碰撞历史
-        self.sensor_manager.clear_collision_history()
         
         # 设置目的地
         self._setup_destination(destination_index)
@@ -212,7 +196,6 @@ class CarlaInference:
     def setup_sensors(self):
         """设置所有传感器"""
         self.sensor_manager.setup_camera()
-        self.sensor_manager.setup_collision_sensor()
         
     def run_inference(self, duration=60, visualize=True, auto_replan=True):
         """
@@ -286,7 +269,7 @@ class CarlaInference:
                 
                 # 获取数据
                 current_image = self.sensor_manager.get_latest_image()
-                # 注意：get_speed_normalized 默认已使用25 m/s，与训练配置一致
+                # 注意：get_speed_normalized 默认已使用25 KM/H，与训练配置一致
                 current_speed = self.vehicle_controller.get_speed_normalized(
                     self.vehicle, SPEED_NORMALIZATION_MPS
                 )
@@ -396,10 +379,6 @@ class CarlaInference:
         print(f"{'='*60}")
         print(f"总帧数: {self.frame_count}")
         print(f"平均推理时间: {self.total_inference_time/self.frame_count*1000:.2f} ms")
-        print(f"碰撞次数: {len(self.sensor_manager.collision_history)}")
-        if self.sensor_manager.collision_history:
-            import numpy as np
-            print(f"平均碰撞强度: {np.mean(self.sensor_manager.collision_history):.2f}")
         print(f"{'='*60}\n")
         
     def cleanup(self):
@@ -437,7 +416,7 @@ def main():
     parser = argparse.ArgumentParser(description='Carla自动驾驶模型实时推理（模块化版本）')
     
     # 模型参数
-    parser.add_argument('--model-path', type=str, default='./model/cil_policy_best.pth',
+    parser.add_argument('--model-path', type=str, default='./model/ddp_6gpu_2_best.pth',
                         help='训练好的模型权重路径')
     parser.add_argument('--net-structure', type=int, default=2,
                         help='网络结构类型 (1|2|3)')
