@@ -194,9 +194,21 @@ class CommandBasedDataCollector(BaseDataCollector):
                 
                 self.current_segment_data = {'rgb': [], 'targets': []}
                 self.segment_count = 0
+                collision_occurred = False  # 碰撞标记
+                
+                # 重置碰撞状态
+                self.reset_collision_state()
                 
                 while self.segment_count < 200 and collected_frames < max_frames:
                     self.step_simulation()
+                    
+                    # 检测碰撞
+                    if self.collision_detected:
+                        print(f"💥 碰撞发生！丢弃当前segment数据（{self.segment_count}帧）")
+                        collision_occurred = True
+                        self.current_segment_data = {'rgb': [], 'targets': []}
+                        self.segment_count = 0
+                        break
                     
                     if self._is_route_completed():
                         print(f"\n🎯 已到达目的地！")
@@ -227,10 +239,12 @@ class CommandBasedDataCollector(BaseDataCollector):
                     if self.segment_count % 50 == 0:
                         print(f"  [收集中] 进度: {self.segment_count}/200 帧")
                 
-                # 自动保存
-                if self.segment_count > 0:
+                # 自动保存（如果没有碰撞）
+                if self.segment_count > 0 and not collision_occurred:
                     print(f"\n💾 自动保存数据段（{self.segment_count} 帧）...")
                     self._save_segment(save_path, save_command)
+                elif collision_occurred:
+                    print(f"⚠️  因碰撞跳过保存，等待下一个命令段...")
                 
                 if self._is_route_completed():
                     break
@@ -312,6 +326,7 @@ def main():
             return
         
         collector.setup_camera()
+        collector.setup_collision_sensor()  # 设置碰撞传感器
         time.sleep(1.0)
         
         collector.collect_data_interactive(

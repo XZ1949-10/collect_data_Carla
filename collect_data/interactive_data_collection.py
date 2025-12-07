@@ -612,6 +612,7 @@ class InteractiveDataCollector:
             # 注意：spawn_vehicle() 已经创建了 BasicAgent，它内部有自己的 LocalPlanner
             # 不需要再创建额外的 local_planner
             self.collector.setup_camera()
+            self.collector.setup_collision_sensor()  # 设置碰撞传感器
             
             # 等待传感器准备
             print("\n等待传感器准备...")
@@ -653,6 +654,13 @@ class InteractiveDataCollector:
                 try:
                     if self.collector.agent is not None:
                         self.collector.agent = None
+                except:
+                    pass
+                
+                try:
+                    if self.collector.collision_sensor is not None:
+                        self.collector.collision_sensor.stop()
+                        self.collector.collision_sensor.destroy()
                 except:
                     pass
                 

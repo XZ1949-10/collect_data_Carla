@@ -558,6 +558,7 @@ class AutoFullTownCollector(BaseDataCollector):
                 return False
             
             self._inner_collector.setup_camera()
+            self._inner_collector.setup_collision_sensor()  # 设置碰撞传感器
             time.sleep(1.0)
             
             # 配置噪声（从自身配置传递到内部收集器，包括参数）
@@ -588,6 +589,12 @@ class AutoFullTownCollector(BaseDataCollector):
         """清理内部收集器"""
         if self._inner_collector:
             try:
+                if self._inner_collector.collision_sensor:
+                    self._inner_collector.collision_sensor.stop()
+                    self._inner_collector.collision_sensor.destroy()
+            except:
+                pass
+            try:
                 if self._inner_collector.camera:
                     self._inner_collector.camera.stop()
                     self._inner_collector.camera.destroy()
@@ -611,6 +618,7 @@ class AutoFullTownCollector(BaseDataCollector):
         segment_data = {'rgb': [], 'targets': []}
         segment_count = 0
         segment_start_cmd = None  # 记录segment开始时的command
+        discarded_segments = 0  # 因碰撞丢弃的segment数
         
         try:
             while collected_frames < self.frames_per_route:
@@ -618,6 +626,19 @@ class AutoFullTownCollector(BaseDataCollector):
                 
                 if self._inner_collector._is_route_completed():
                     print(f"\n🎯 已到达目的地！")
+                    break
+                
+                # 检测碰撞：如果发生碰撞，丢弃当前segment数据，终止当前路线
+                if self._inner_collector.collision_detected:
+                    if segment_count > 0:
+                        print(f"💥 碰撞发生！丢弃当前segment数据（{segment_count}帧）")
+                        discarded_segments += 1
+                    segment_data = {'rgb': [], 'targets': []}
+                    segment_count = 0
+                    segment_start_cmd = None
+                    self._inner_collector.reset_collision_state()
+                    # 碰撞后结束当前路线收集
+                    print(f"⚠️  因碰撞终止当前路线收集")
                     break
                 
                 if len(self._inner_collector.image_buffer) == 0:
@@ -650,17 +671,29 @@ class AutoFullTownCollector(BaseDataCollector):
                 
                 # 每200帧保存，使用segment开始时的command
                 if segment_count >= 200:
-                    self._save_segment_auto(segment_data, save_path, segment_start_cmd)
+                    # 保存前再次检查碰撞状态
+                    if not self._inner_collector.collision_detected:
+                        self._save_segment_auto(segment_data, save_path, segment_start_cmd)
+                    else:
+                        print(f"💥 碰撞发生！丢弃segment数据（{segment_count}帧）")
+                        discarded_segments += 1
                     segment_data = {'rgb': [], 'targets': []}
                     segment_count = 0
                     segment_start_cmd = None
+                    self._inner_collector.reset_collision_state()
                 
                 if collected_frames % 100 == 0:
                     print(f"  [收集中] 帧数: {collected_frames}/{self.frames_per_route}")
             
-            # 保存剩余数据，使用segment开始时的command
-            if segment_count > 0:
+            # 保存剩余数据（如果没有碰撞）
+            if segment_count > 0 and not self._inner_collector.collision_detected:
                 self._save_segment_auto(segment_data, save_path, segment_start_cmd if segment_start_cmd else current_cmd)
+            elif segment_count > 0:
+                print(f"💥 碰撞发生！丢弃最后segment数据（{segment_count}帧）")
+                discarded_segments += 1
+            
+            if discarded_segments > 0:
+                print(f"⚠️  本路线因碰撞丢弃了 {discarded_segments} 个segment")
             
             print(f"✅ 路线完成！帧数: {collected_frames}")
             self.total_frames_collected += collected_frames

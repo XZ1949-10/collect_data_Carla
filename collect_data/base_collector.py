@@ -167,6 +167,11 @@ class BaseDataCollector:
         
         # 保存专家动作（用于标签，噪声模式下使用）
         self._expert_control = None
+        
+        # ========== 碰撞检测配置 ==========
+        self.collision_sensor = None
+        self.collision_detected = False
+        self.collision_history = []  # 记录碰撞历史
     
     def _init_noisers(self):
         """初始化噪声器（使用当前参数和帧率）"""
@@ -378,6 +383,49 @@ class BaseDataCollector:
         
         self.camera.listen(lambda image: self._on_camera_update(image))
         print(f"摄像头设置完成！{self.camera_raw_width}x{self.camera_raw_height} → {self.image_width}x{self.image_height}")
+    
+    def setup_collision_sensor(self):
+        """设置碰撞传感器"""
+        if self.vehicle is None:
+            print("⚠️  无法设置碰撞传感器：车辆未生成")
+            return False
+        
+        print("正在设置碰撞传感器...")
+        
+        collision_bp = self.blueprint_library.find('sensor.other.collision')
+        self.collision_sensor = self.world.spawn_actor(
+            collision_bp,
+            carla.Transform(),
+            attach_to=self.vehicle
+        )
+        
+        self.collision_sensor.listen(lambda event: self._on_collision(event))
+        self.collision_detected = False
+        self.collision_history = []
+        print("✅ 碰撞传感器设置完成！")
+        return True
+    
+    def _on_collision(self, event):
+        """碰撞事件回调"""
+        self.collision_detected = True
+        
+        # 获取碰撞对象信息
+        other_actor = event.other_actor
+        actor_type = other_actor.type_id if other_actor else "unknown"
+        
+        # 记录碰撞信息
+        collision_info = {
+            'frame': self.world.get_snapshot().frame if self.world else 0,
+            'other_actor': actor_type,
+            'impulse': (event.normal_impulse.x, event.normal_impulse.y, event.normal_impulse.z)
+        }
+        self.collision_history.append(collision_info)
+        
+        print(f"💥 检测到碰撞！碰撞对象: {actor_type}")
+    
+    def reset_collision_state(self):
+        """重置碰撞状态（在新segment开始时调用）"""
+        self.collision_detected = False
     
     def _on_camera_update(self, image):
         """摄像头回调"""
@@ -780,6 +828,13 @@ class BaseDataCollector:
         print("正在清理资源...")
         
         self.agent = None
+        
+        if self.collision_sensor is not None:
+            try:
+                self.collision_sensor.stop()
+                self.collision_sensor.destroy()
+            except:
+                pass
         
         if self.camera is not None:
             try:
