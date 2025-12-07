@@ -25,6 +25,10 @@ import carla
 from carla_config import *
 from carla_sensors import SensorManager
 from carla_visualizer import CarlaVisualizer
+
+# 可视化模式常量
+VIS_MODE_SPECTATOR = 'spectator'  # Spectator跟随模式（在CARLA窗口中显示）
+VIS_MODE_OPENCV = 'opencv'        # OpenCV独立窗口模式（旧模式）
 from navigation_planner_adapter import NavigationPlannerAdapter
 from carla_model_loader import ModelLoader
 from carla_image_processor import ImageProcessor
@@ -53,7 +57,8 @@ class CarlaInference:
                  gpu_id=0,
                  enable_post_processing=False,
                  post_processor_config=None,
-                 enable_image_crop=True):
+                 enable_image_crop=True,
+                 visualization_mode='spectator'):
         """
         初始化推理器
         
@@ -66,6 +71,9 @@ class CarlaInference:
             enable_post_processing (bool): 是否启用后处理
             post_processor_config (dict): 后处理器配置
             enable_image_crop (bool): 是否启用图像裁剪（去除天空和引擎盖）
+            visualization_mode (str): 可视化模式
+                - 'spectator': Spectator跟随模式（在CARLA UE4窗口中第三人称跟随）
+                - 'opencv': OpenCV独立窗口模式（旧模式，小弹窗）
         """
         # Carla连接参数
         self.host = host
@@ -101,10 +109,13 @@ class CarlaInference:
         self.enable_post_processing = enable_post_processing
         self.post_processor_config = post_processor_config
         
+        # 可视化模式
+        self.visualization_mode = visualization_mode
+        
         # 组件模块
         self.sensor_manager = None
         self.navigation_planner = None
-        self.visualizer = CarlaVisualizer()
+        self.visualizer = CarlaVisualizer(mode=visualization_mode)
         
         # 状态
         self.current_command = 2  # 默认命令：2=跟车
@@ -176,6 +187,10 @@ class CarlaInference:
         # 设置目的地
         self._setup_destination(destination_index)
         
+        # 如果是spectator模式，设置跟随
+        if self.visualization_mode == VIS_MODE_SPECTATOR:
+            self.visualizer.setup_spectator_mode(self.world, self.vehicle)
+        
         return True
     
     def _setup_destination(self, destination_index):
@@ -213,6 +228,9 @@ class CarlaInference:
         print(f"{'='*60}")
         print(f"运行时长: {'无限' if duration < 0 else f'{duration}秒'}")
         print(f"可视化: {'开启' if visualize else '关闭'}")
+        if visualize:
+            mode_desc = "Spectator跟随模式（CARLA窗口第三人称视角）" if self.visualization_mode == VIS_MODE_SPECTATOR else "OpenCV独立窗口模式"
+            print(f"可视化模式: {mode_desc}")
         print(f"自动重新规划: {'开启' if auto_replan else '关闭'}")
         print(f"目标帧率: {1.0/SYNC_MODE_DELTA_SECONDS:.0f} FPS (与模拟时间同步)")
         print("模型输出: 直接控制（无后处理）")
@@ -315,8 +333,10 @@ class CarlaInference:
                 # 可视化
                 if visualize:
                     route_info = self.navigation_planner.get_route_info(self.vehicle)
+                    # 获取模型实际看到的图像（裁剪+缩放后的 200x88）
+                    model_input_image = self.image_processor.get_processed_image(current_image)
                     self.visualizer.visualize(
-                        current_image, 
+                        model_input_image, 
                         control_result, 
                         current_speed, 
                         route_info,
@@ -468,6 +488,9 @@ def main():
                         help='启用模型输出后处理（启发式规则优化）')
     parser.add_argument('--image-crop', type=str2bool, default=True,
                         help='启用图像裁剪（去除天空和引擎盖，与训练一致）')
+    parser.add_argument('--vis-mode', type=str, default='spectator',
+                        choices=['spectator', 'opencv'],
+                        help='可视化模式: spectator=CARLA窗口第三人称跟随(推荐), opencv=独立小窗口(旧模式)')
     
     args = parser.parse_args()
     
@@ -484,7 +507,8 @@ def main():
         town=args.town,
         gpu_id=args.gpu,
         enable_post_processing=args.post_processing,
-        enable_image_crop=args.image_crop
+        enable_image_crop=args.image_crop,
+        visualization_mode=args.vis_mode
     )
     
     try:

@@ -86,3 +86,26 @@ class ImageProcessor:
         img_tensor = torch.from_numpy(image_input).to(self.device)
         
         return img_tensor
+    
+    def get_processed_image(self, image):
+        """
+        获取处理后的图像（用于可视化，不转换为tensor）
+        
+        参数:
+            image: numpy数组 (H, W, 3)，RGB格式，值范围 [0, 255]
+            
+        返回:
+            numpy数组: (88, 200, 3)，RGB格式，值范围 [0, 255]
+        """
+        # 步骤1: 图像裁剪
+        if self.enable_crop:
+            crop_top = int(image.shape[0] * self.crop_ratio_top)
+            crop_bottom = int(image.shape[0] * self.crop_ratio_bottom)
+            image = image[crop_top:crop_bottom, :, :]
+        
+        # 步骤2: 缩放到模型输入尺寸 (88, 200)
+        if image.shape[0] != IMAGE_HEIGHT or image.shape[1] != IMAGE_WIDTH:
+            image = cv2.resize(image, (IMAGE_WIDTH, IMAGE_HEIGHT), 
+                               interpolation=cv2.INTER_LINEAR)
+        
+        return image
