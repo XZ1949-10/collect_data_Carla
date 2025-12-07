@@ -214,6 +214,7 @@ class CarlaInference:
         print(f"运行时长: {'无限' if duration < 0 else f'{duration}秒'}")
         print(f"可视化: {'开启' if visualize else '关闭'}")
         print(f"自动重新规划: {'开启' if auto_replan else '关闭'}")
+        print(f"目标帧率: {1.0/SYNC_MODE_DELTA_SECONDS:.0f} FPS (与模拟时间同步)")
         print("模型输出: 直接控制（无后处理）")
         print(f"{'='*60}\n")
         
@@ -228,8 +229,13 @@ class CarlaInference:
         self.visualizer.set_start_time(start_time)
         self.frame_count = 0
         
+        # 帧率控制：确保模拟时间与现实时间同步
+        target_frame_time = SYNC_MODE_DELTA_SECONDS  # 每帧目标耗时（秒）
+        
         try:
             while True:
+                frame_start_time = time.time()  # 记录帧开始时间
+                
                 # 检查超时
                 if duration > 0 and time.time() - start_time > duration:
                     print(f"\n已运行 {duration} 秒，停止推理")
@@ -316,6 +322,12 @@ class CarlaInference:
                         route_info,
                         self.frame_count
                     )
+                
+                # 帧率控制：等待到目标帧时间，确保模拟时间与现实时间1:1同步
+                frame_elapsed = time.time() - frame_start_time
+                sleep_time = target_frame_time - frame_elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                     
         except KeyboardInterrupt:
             print("\n用户中断推理")
