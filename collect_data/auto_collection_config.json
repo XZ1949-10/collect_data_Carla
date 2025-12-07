@@ -121,7 +121,7 @@
         "_comment_longitudinal_noise": "是否启用纵向噪声（油门/刹车噪声，模拟速度扰动）",
         "lateral_frequency": 15,
         "_comment_lateral_frequency": "横向噪声频率（每分钟触发次数），推荐15-40，越高触发越频繁",
-        "lateral_intensity": 25,
+        "lateral_intensity": 15,
         "_comment_lateral_intensity": "横向噪声强度，推荐5-25，越大偏离越明显。intensity=15,speed=20时转向偏移约±0.15",
         "lateral_min_time": 2.0,
         "_comment_lateral_min_time": "横向噪声最小持续时间（秒），推荐0.5-2.0",
