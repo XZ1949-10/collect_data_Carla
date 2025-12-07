@@ -3,10 +3,16 @@
 '''
 作者: AI Assistant
 日期: 2025-11-25
-更新: 2025-12-03
+更新: 2025-12-04
 说明: NavigationPlanner 适配器
       使用 BasicAgent + LocalPlanner 获取导航命令
       与数据收集时的命令获取方式保持一致
+      
+更新内容（2025-12-04）：
+      - 移植 command_based_data_collection.py 中的命令获取逻辑
+      - 添加距离过滤：只有距离转弯点<15米才触发转弯命令
+      - 添加命令持久化：转弯命令保持直到转弯完成
+      - 添加多条件重置：方向盘回正+不在交叉口+队列全是LANEFOLLOW
 '''
 
 import random
@@ -32,9 +38,11 @@ class NavigationPlannerAdapter:
     使用 BasicAgent + LocalPlanner 来获取导航命令，
     与数据收集时的命令获取方式保持一致，确保推理时命令与训练数据一致。
     
-    关键改进（2025-12-03）：
-    - 使用 BasicAgent 内部的 LocalPlanner.target_road_option 获取命令
-    - 与 command_based_data_collection.py 中的 _get_navigation_command() 保持一致
+    关键改进（2025-12-04）：
+    - 完全移植 command_based_data_collection.py 中的 _get_navigation_command() 逻辑
+    - 添加距离过滤：只有距离转弯点<15米才触发转弯命令
+    - 添加命令持久化：转弯命令保持直到转弯完成
+    - 添加多条件重置：方向盘回正+不在交叉口+队列全是LANEFOLLOW
     """
     
     def __init__(self, world, sampling_resolution=2.0, target_speed=20.0):
@@ -75,8 +83,19 @@ class NavigationPlannerAdapter:
             RoadOption.VOID: 2            # 未定义 -> 跟车
         }
         
+        # ========== 转弯命令持久化状态 ==========
+        self._last_turn_command = None   # 上一次检测到的转弯命令
+        self._turn_command_frames = 0    # 转弯命令持续的帧数
+        self._max_turn_frames = 200      # 转弯命令最大持续帧数（约10秒@20fps）
+        
+        # ========== 转弯命令重置阈值（可调整以控制持久时间） ==========
+        self._steering_threshold = 0.02       # 方向盘回正阈值（越小越严格，需要完全回正）
+        self._reset_frames_outside_junction = 60   # 交叉口外重置帧数（约3秒）
+        self._reset_frames_inside_junction = 120   # 交叉口内重置帧数（约6秒）
+        
         print(f"NavigationPlannerAdapter 初始化完成 (采样分辨率: {sampling_resolution}m)")
-        print(f"  ✅ 使用 BasicAgent + LocalPlanner 获取命令（与数据收集一致）")
+        print(f"  ✅ 使用与数据收集完全一致的命令获取逻辑")
+        print(f"  ✅ 距离过滤 + 命令持久化 + 多条件重置")
     
     def set_destination(self, vehicle, destination):
         """
@@ -189,10 +208,13 @@ class NavigationPlannerAdapter:
         """
         获取当前导航命令
         
-        【重要】使用与数据收集完全一致的方式获取命令：
-        从 BasicAgent 的 LocalPlanner.target_road_option 获取
+        【重要】完全移植自 command_based_data_collection.py 的 _get_navigation_command()
         
-        这与 command_based_data_collection.py 中的 _get_navigation_command() 方法一致
+        改进策略（与数据收集完全一致）：
+        1. 缩小搜索范围：只搜索前5个路点（约10米），避免过早检测到转弯
+        2. 基于距离的命令触发：只有当距离路口足够近（<15米）时才返回转弯命令
+        3. 转弯命令持久化：当检测到转弯命令时保存，直到转弯完成
+        4. 多条件重置：方向盘回正+不在交叉口+队列全是LANEFOLLOW
         
         参数:
             vehicle: carla.Vehicle 实例
@@ -205,18 +227,107 @@ class NavigationPlannerAdapter:
             return 2  # 默认返回跟车命令
         
         try:
-            # 【关键】从 BasicAgent 的 LocalPlanner 获取 RoadOption
-            # 这与数据收集时的方式完全一致
             local_planner = self._agent.get_local_planner()
             if local_planner is None:
                 return 2
             
-            # 获取当前目标路点的 RoadOption
-            road_option = local_planner.target_road_option
-            if road_option is None:
-                road_option = RoadOption.LANEFOLLOW
+            waypoints_queue = local_planner.get_plan()
+            if waypoints_queue is None or len(waypoints_queue) == 0:
+                return 2
             
-            # 映射到数值命令
+            # ========== 步骤1：缩小搜索范围，避免过早检测转弯 ==========
+            # 只搜索前5个路点（约10米，因为sampling_radius=2.0）
+            search_range = min(5, len(waypoints_queue))
+            
+            found_turn_command = None
+            turn_waypoint_index = -1
+            
+            for i in range(search_range):
+                _, direction = waypoints_queue[i]
+                
+                # 如果找到转弯/直行命令，记录位置
+                if direction in [RoadOption.LEFT, RoadOption.RIGHT, RoadOption.STRAIGHT]:
+                    found_turn_command = direction
+                    turn_waypoint_index = i
+                    break
+                
+                # 如果是变道命令或LANEFOLLOW，继续查找
+                if direction in [RoadOption.CHANGELANELEFT, RoadOption.CHANGELANERIGHT, RoadOption.LANEFOLLOW]:
+                    continue
+            
+            # ========== 步骤2：基于距离的命令触发 ==========
+            if found_turn_command is not None and turn_waypoint_index >= 0:
+                # 计算到转弯路点的距离
+                turn_waypoint = waypoints_queue[turn_waypoint_index][0]
+                vehicle_location = vehicle.get_location()
+                distance_to_turn = vehicle_location.distance(turn_waypoint.transform.location)
+                
+                # 只有距离小于15米时才触发转弯命令
+                if distance_to_turn < 15.0:
+                    self._last_turn_command = self._road_option_to_command.get(found_turn_command, 2)
+                    self._turn_command_frames = 0
+                    return self._last_turn_command
+                else:
+                    # 距离太远，返回Follow
+                    return 2
+            
+            # ========== 步骤3：检查是否已离开交叉口（命令持久化） ==========
+            if self._last_turn_command is not None and self._last_turn_command != 2:
+                # 检查队列是否全是 LANEFOLLOW
+                check_range = min(5, len(waypoints_queue))
+                all_lane_follow = all(
+                    waypoints_queue[i][1] == RoadOption.LANEFOLLOW 
+                    for i in range(check_range)
+                )
+                
+                # 检查车辆是否在交叉口内
+                current_waypoint = self._map.get_waypoint(vehicle.get_location())
+                is_in_junction = current_waypoint.is_junction if current_waypoint else False
+                
+                # 获取方向盘角度
+                steering = abs(vehicle.get_control().steer)
+                
+                # 增加帧计数
+                self._turn_command_frames += 1
+                
+                # 判断是否应该重置命令
+                should_reset = False
+                
+                # 条件1：超过最大帧数，强制重置
+                if self._turn_command_frames >= self._max_turn_frames:
+                    should_reset = True
+                
+                # 条件2：队列全是 LANEFOLLOW + 不在交叉口内 + 方向盘回正
+                elif all_lane_follow and not is_in_junction and steering < self._steering_threshold:
+                    should_reset = True
+                
+                # 条件3：队列全是 LANEFOLLOW + 不在交叉口内 + 已持续足够帧数
+                elif all_lane_follow and not is_in_junction and self._turn_command_frames > self._reset_frames_outside_junction:
+                    should_reset = True
+                
+                # 条件4：队列全是 LANEFOLLOW + 已持续足够帧数（即使在交叉口内也重置）
+                elif all_lane_follow and self._turn_command_frames > self._reset_frames_inside_junction:
+                    should_reset = True
+                
+                if should_reset:
+                    # 重置转弯/直行命令
+                    self._last_turn_command = None
+                    self._turn_command_frames = 0
+                    return 2  # 返回 Follow
+                else:
+                    # 还在转弯/直行中，继续返回之前的命令
+                    return self._last_turn_command
+            
+            # ========== 步骤4：降级处理 ==========
+            incoming_wp, incoming_direction = local_planner.get_incoming_waypoint_and_direction(steps=3)
+            
+            if incoming_direction is not None and incoming_direction != RoadOption.VOID:
+                road_option = incoming_direction
+            else:
+                road_option = local_planner.target_road_option
+                if road_option is None:
+                    road_option = RoadOption.LANEFOLLOW
+            
             command = self._road_option_to_command.get(road_option, 2)
             return command
             

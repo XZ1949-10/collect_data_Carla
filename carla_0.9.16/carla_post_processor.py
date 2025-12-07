@@ -49,10 +49,10 @@ class PostProcessor:
         self.avoid_stopping_min_speed = 5.0   # 当前速度阈值 (km/h)
         self.avoid_stopping_pred_speed = 5.0  # 预测速度阈值 (km/h)
         self.avoid_stopping_target_speed = 5.6 # 目标启动速度 (km/h)
-        self.turning_steer_scale = 2.0
+        self.turning_steer_scale = 1.5
         self.speed_normalization = SPEED_NORMALIZATION_MPS  # 使用配置文件中的值
     
-    def process(self, steer, throttle, brake, speed_normalized, pred_speed_normalized=None):
+    def process(self, steer, throttle, brake, speed_normalized, pred_speed_normalized=None, current_command=None):
         """
         对模型输出进行后处理
         
@@ -62,32 +62,34 @@ class PostProcessor:
             brake (float): 刹车 [0.0, 1.0]
             speed_normalized (float): 归一化的当前速度（除以25.0）
             pred_speed_normalized (float): 归一化的预测速度（可选，用于避免停车逻辑）
+            current_command (int): 当前导航命令 (2=跟车, 3=左转, 4=右转, 5=直行)
             
         返回:
             tuple: (steer, throttle, brake) 处理后的控制信号
         """
-        # # # 规则1: 刹车去噪 - 避免误刹车
+        # 规则1: 刹车去噪 - 避免误刹车
         # if self.enable_brake_denoising:
         #     if brake < self.brake_noise_threshold:
         #         brake = 0.0
         
-        # # 规则2: 油门刹车互斥 - 如果油门更大，则不刹车
-        # if self.enable_throttle_brake_mutex:
-        #     if throttle > brake:
-        #         brake = 0.0
+        # 规则1.1: 刹车去噪 - 避免误刹车
+        # if self.enable_brake_denoising:
+        #     throttle=throttle*0.85
         
-        # 规则3: 速度限制 - 当速度超过配置的最高速度时，关闭油门
+        # 规则2: 油门刹车互斥 - 如果油门更大，则不刹车
+        if self.enable_throttle_brake_mutex:
+            if throttle > brake:
+                brake = 0.0
+        
+        # # 规则3: 速度限制 - 当速度超过配置的最高速度时，关闭油门
         if self.enable_speed_limit:
-            # if speed_normalized * self.speed_normalization > self.max_speed_limit_mps and brake == 0.0:
             if speed_normalized * self.speed_normalization > self.max_speed_limit_mps:
-                throttle = throttle*0.4
+                throttle = throttle * 0.6
         
-        # 规则4: 转弯减速 - 大转向时降低油门
-        if self.enable_turning_slowdown:
-            # print("------------------------------------------------------------------------")
-            if np.abs(steer * self.turning_steer_scale) > self.turning_steer_threshold:
-                throttle = throttle * self.turning_throttle_scale
-                steer = steer * self.turning_steer_scale
+        # 规则4: 转弯减速 - 当命令为左转(3)或右转(4)时降低油门
+        if self.enable_turning_slowdown and current_command is not None:
+            if current_command in [3, 4]:  # 3=左转, 4=右转
+                throttle = throttle * 1.0
         
         # 规则5: 避免停车逻辑
         if self.enable_avoid_stopping and pred_speed_normalized is not None:

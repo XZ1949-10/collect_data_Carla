@@ -92,7 +92,8 @@ class ModelPredictor:
             steer, throttle, brake = self.post_processor.process(
                 steer, throttle, brake,
                 speed,
-                predicted_speed
+                predicted_speed,
+                current_command  # 传入当前命令用于转弯减速判断
             )
         
         # 最后做clip，确保控制值在合法范围内

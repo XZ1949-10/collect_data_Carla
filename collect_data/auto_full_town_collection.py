@@ -8,40 +8,29 @@
       无需人工干预，智能选择路线并自动保存
 '''
 
-import glob
 import os
 import sys
 import time
 import random
 import numpy as np
 import json
+import cv2
 from datetime import datetime
 
-# 添加CARLA Python API路径
-try:
-    sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
-        sys.version_info.major,
-        sys.version_info.minor,
-        'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
-except IndexError:
-    pass
+# 导入基类
+from base_collector import BaseDataCollector, AGENTS_AVAILABLE
 
 import carla
-
-# 导入数据收集器
-from command_based_data_collection import CommandBasedDataCollector
 
 # 导入agents模块
 try:
     from agents.navigation.global_route_planner import GlobalRoutePlanner
-    from agents.navigation.local_planner_info import LocalPlanner, RoadOption
-    AGENTS_AVAILABLE = True
-except ImportError as e:
-    AGENTS_AVAILABLE = False
-    print(f"⚠️  警告: 无法导入agents模块: {e}")
+    from agents.navigation.local_planner import RoadOption
+except ImportError:
+    pass
 
 
-class AutoFullTownCollector:
+class AutoFullTownCollector(BaseDataCollector):
     """全自动Town01数据收集器"""
     
     def __init__(self, host='localhost', port=2000, town='Town01',
@@ -49,74 +38,59 @@ class AutoFullTownCollector:
                  ignore_vehicles_percentage=80, target_speed=10.0,
                  simulation_fps=20, spawn_npc_vehicles=False, num_npc_vehicles=0,
                  spawn_npc_walkers=False, num_npc_walkers=0, weather_config=None):
-        """
-        初始化全自动收集器
         
-        参数:
-            host (str): CARLA服务器地址
-            port (int): CARLA服务器端口
-            town (str): 地图名称
-            ignore_traffic_lights (bool): 是否忽略红绿灯
-            ignore_signs (bool): 是否忽略停车标志
-            ignore_vehicles_percentage (int): 忽略其他车辆的百分比
-            target_speed (float): 目标速度（km/h）
-            simulation_fps (int): 模拟帧率
-            spawn_npc_vehicles (bool): 是否生成NPC车辆
-            num_npc_vehicles (int): NPC车辆数量
-            spawn_npc_walkers (bool): 是否生成NPC行人
-            num_npc_walkers (int): NPC行人数量
-            weather_config (dict): 天气配置
-        """
-        self.host = host
-        self.port = port
-        self.town = town
+        super().__init__(host, port, town, ignore_traffic_lights, ignore_signs,
+                        ignore_vehicles_percentage, target_speed, simulation_fps)
         
-        # 交通规则配置
-        self.ignore_traffic_lights = ignore_traffic_lights
-        self.ignore_signs = ignore_signs
-        self.ignore_vehicles_percentage = ignore_vehicles_percentage
-        
-        # 车辆和模拟配置
-        self.target_speed = target_speed
-        self.simulation_fps = simulation_fps
+        # NPC配置
         self.spawn_npc_vehicles = spawn_npc_vehicles
         self.num_npc_vehicles = num_npc_vehicles
         self.spawn_npc_walkers = spawn_npc_walkers
         self.num_npc_walkers = num_npc_walkers
         self.weather_config = weather_config or {}
         
-        # CARLA对象
-        self.client = None
-        self.world = None
+        # NPC列表
+        self.npc_vehicles = []
+        self.npc_walkers = []
+        self.walker_controllers = []
+        
+        # 路线规划
         self.spawn_points = []
         self.route_planner = None
-        self.npc_vehicles = []  # 存储NPC车辆列表
-        self.npc_walkers = []   # 存储NPC行人列表
-        self.walker_controllers = []  # 存储行人控制器列表
-        
-        # 数据收集器
-        self.collector = None
         
         # 收集策略
-        self.min_distance = 50.0  # 最小直线距离（米）
-        self.max_distance = 500.0  # 最大直线距离（米）
-        self.frames_per_route = 1000  # 每条路线收集的帧数
+        self.min_distance = 50.0
+        self.max_distance = 500.0
+        self.frames_per_route = 1000
+        self.target_routes = 200
+        self.overlap_threshold = 0.5
         
-        # 智能策略参数
-        self.target_routes = 200  # 目标路线数量
-        self.overlap_threshold = 0.5  # 路径重叠阈值
-        
-        # 统计信息
+        # 统计
         self.total_routes_attempted = 0
         self.total_routes_completed = 0
         self.total_frames_collected = 0
         self.failed_routes = []
         
-        # 路线生成策略
-        self.route_generation_strategy = 'smart'  # 'smart' 或 'exhaustive'
+        self.route_generation_strategy = 'smart'
         
+        # 内部收集器引用
+        self._inner_collector = None
+        
+        # 噪声配置（会传递给内部收集器）
+        self.noise_enabled = False
+        self.lateral_noise_enabled = True
+        self.longitudinal_noise_enabled = False
+        
+        # 噪声参数（默认值与 auto_collection_config.json 保持一致）
+        self.lateral_frequency = 25
+        self.lateral_intensity = 10
+        self.lateral_min_time = 1.0
+        self.longitudinal_frequency = 15
+        self.longitudinal_intensity = 10
+        self.longitudinal_min_time = 2.0
+    
     def connect(self):
-        """连接到CARLA服务器"""
+        """连接到CARLA服务器（扩展版）"""
         print("\n" + "="*70)
         print("🚗 全自动Town01数据收集器")
         print("="*70)
@@ -125,7 +99,6 @@ class AutoFullTownCollector:
         self.client = carla.Client(self.host, self.port)
         self.client.set_timeout(10.0)
         
-        # 加载地图
         self.world = self.client.get_world()
         current_map_name = self.world.get_map().name.split('/')[-1]
         
@@ -135,789 +108,46 @@ class AutoFullTownCollector:
         else:
             print(f"✅ 已连接到地图 {self.town}")
         
-        # 获取生成点
+        self.blueprint_library = self.world.get_blueprint_library()
         self.spawn_points = self.world.get_map().get_spawn_points()
         print(f"✅ 成功连接！共找到 {len(self.spawn_points)} 个生成点")
         
-        # 显示配置信息
-        print(f"\n📋 配置信息:")
-        print(f"  交通规则:")
-        print(f"    • 忽略红绿灯: {'✅ 是' if self.ignore_traffic_lights else '❌ 否'}")
-        print(f"    • 忽略停车标志: {'✅ 是' if self.ignore_signs else '❌ 否'}")
-        print(f"    • 忽略其他车辆: {self.ignore_vehicles_percentage}%")
-        print(f"  车辆设置:")
-        print(f"    • 目标速度: {self.target_speed:.1f} km/h")
-        print(f"    • 模拟帧率: {self.simulation_fps} FPS")
-        print(f"  世界环境:")
-        print(f"    • 生成NPC车辆: {'✅ 是' if self.spawn_npc_vehicles else '❌ 否'}")
-        if self.spawn_npc_vehicles:
-            print(f"    • NPC车辆数量: {self.num_npc_vehicles}")
-        print(f"    • 生成NPC行人: {'✅ 是' if self.spawn_npc_walkers else '❌ 否'}")
-        if self.spawn_npc_walkers:
-            print(f"    • NPC行人数量: {self.num_npc_walkers}")
-        
-        # 设置天气
+        self._print_config()
         self._set_weather()
         
-        # 生成NPC车辆（如果配置启用）
         if self.spawn_npc_vehicles and self.num_npc_vehicles > 0:
             self._spawn_npc_vehicles()
-        
-        # 生成NPC行人（如果配置启用）
         if self.spawn_npc_walkers and self.num_npc_walkers > 0:
             self._spawn_npc_walkers()
         
-        # 初始化路径规划器
         if AGENTS_AVAILABLE:
             try:
-                self.route_planner = GlobalRoutePlanner(
-                    self.world.get_map(), 
-                    sampling_resolution=2.0
-                )
+                self.route_planner = GlobalRoutePlanner(self.world.get_map(), sampling_resolution=2.0)
                 print("✅ 路径规划器初始化成功")
             except Exception as e:
                 print(f"⚠️  路径规划器初始化失败: {e}")
-                self.route_planner = None
-        
         print()
-        
-    def generate_route_pairs(self):
-        """
-        生成路线对（起点-终点组合）
-        
-        策略：
-        1. 智能模式：命令平衡 + 路径去重 + 场景多样性
-        2. 穷举模式：遍历所有可能的组合（数量巨大）
-        
-        返回:
-            list: [(start_idx, end_idx, distance), ...] 路线对列表
-        """
-        print("\n" + "="*70)
-        print("📍 生成路线对")
-        print("="*70)
-        
-        num_spawns = len(self.spawn_points)
-        route_pairs = []
-        
-        if self.route_generation_strategy == 'smart':
-            route_pairs = self._generate_smart_routes()
-        else:  # exhaustive
-            route_pairs = self._generate_exhaustive_routes(num_spawns)
-        
-        # 显示统计信息
-        if route_pairs:
-            self._print_route_statistics(route_pairs)
-        
-        print()
-        return route_pairs
     
-    def _generate_smart_routes(self):
-        """
-        真正智能的路线生成策略
-        
-        核心改进：
-        1. 命令预测与平衡 - 预分析路线命令分布，优先选择稀缺命令
-        2. 路径去重 - 避免高度重叠的路线
-        3. 场景多样性 - 确保起点分布均匀
-        4. 动态配额 - 根据命令需求动态调整
-        """
-        print(f"策略: 🧠 智能选择 v2.0（命令平衡 + 路径去重 + 场景多样性）")
-        print(f"距离范围: {self.min_distance:.0f}m - {self.max_distance:.0f}m")
-        
-        if not AGENTS_AVAILABLE or self.route_planner is None:
-            print("⚠️  路径规划器不可用，回退到基础智能策略")
-            return self._generate_basic_smart_routes()
-        
-        print("\n🔍 第一阶段：分析所有候选路线...")
-        
-        # 步骤1：收集所有候选路线并预测命令分布
-        candidate_routes = self._analyze_all_candidate_routes()
-        
-        if not candidate_routes:
-            print("❌ 没有找到有效的候选路线")
-            return []
-        
-        print(f"  ✅ 找到 {len(candidate_routes)} 条候选路线")
-        
-        # 步骤2：按命令平衡选择路线
-        print("\n🎯 第二阶段：命令平衡选择...")
-        selected_routes = self._select_balanced_routes(candidate_routes)
-        
-        # 步骤3：路径去重
-        print("\n🔄 第三阶段：路径去重...")
-        deduplicated_routes = self._deduplicate_routes(selected_routes)
-        
-        print(f"\n✅ 最终选择了 {len(deduplicated_routes)} 条智能路线")
-        
-        return deduplicated_routes
-    
-    def _analyze_all_candidate_routes(self):
-        """
-        分析所有候选路线，预测每条路线的命令分布
-        
-        改进：使用实际路径距离进行筛选，而非直线距离
-        
-        返回:
-            list: [{
-                'start_idx': int,
-                'end_idx': int,
-                'distance': float,          # 直线距离
-                'route_distance': float,    # 实际路径距离
-                'commands': {cmd: count},
-                'command_sequence': [cmd1, cmd2, ...],
-                'waypoints': [(x, y), ...]
-            }, ...]
-        """
-        num_spawns = len(self.spawn_points)
-        candidates = []
-        
-        # 命令映射（与RoadOption对应）
-        # 2=Follow, 3=Left, 4=Right, 5=Straight
-        command_map = {
-            'LANEFOLLOW': 2,
-            'LEFT': 3,
-            'RIGHT': 4,
-            'STRAIGHT': 5,
-            'CHANGELANELEFT': 2,
-            'CHANGELANERIGHT': 2,
-        }
-        
-        total_pairs = 0
-        analyzed = 0
-        skipped_by_distance = 0
-        
-        # 先计算总数用于进度显示（使用更宽松的直线距离粗筛）
-        for start_idx in range(num_spawns):
-            for end_idx in range(num_spawns):
-                if start_idx != end_idx:
-                    start_loc = self.spawn_points[start_idx].location
-                    end_loc = self.spawn_points[end_idx].location
-                    distance = self._calculate_distance(start_loc, end_loc)
-                    # 使用更宽松的范围进行粗筛（实际路径通常比直线距离长）
-                    if distance >= self.min_distance * 0.5 and distance <= self.max_distance * 1.5:
-                        total_pairs += 1
-        
-        print(f"  需要分析约 {total_pairs} 条候选路线...")
-        print(f"  距离范围: {self.min_distance:.0f}m - {self.max_distance:.0f}m（使用实际路径距离）")
-        
-        for start_idx in range(num_spawns):
-            start_loc = self.spawn_points[start_idx].location
-            
-            for end_idx in range(num_spawns):
-                if start_idx == end_idx:
-                    continue
-                
-                end_loc = self.spawn_points[end_idx].location
-                straight_distance = self._calculate_distance(start_loc, end_loc)
-                
-                # 直线距离粗筛（使用更宽松的范围）
-                if straight_distance < self.min_distance * 0.5 or straight_distance > self.max_distance * 1.5:
-                    continue
-                
-                # 规划路径并分析命令
-                try:
-                    route = self.route_planner.trace_route(
-                        self.spawn_points[start_idx].location,
-                        self.spawn_points[end_idx].location
-                    )
-                    
-                    if not route or len(route) < 2:
-                        continue
-                    
-                    # 分析命令分布
-                    commands = {2: 0, 3: 0, 4: 0, 5: 0}  # Follow, Left, Right, Straight
-                    command_sequence = []
-                    waypoints = []
-                    route_distance = 0.0
-                    
-                    prev_cmd = None
-                    for i, (wp, road_option) in enumerate(route):
-                        # 计算路径长度
-                        if i > 0:
-                            prev_wp = route[i-1][0]
-                            route_distance += wp.transform.location.distance(prev_wp.transform.location)
-                        
-                        # 记录waypoint位置（用于去重）
-                        waypoints.append((wp.transform.location.x, wp.transform.location.y))
-                        
-                        # 转换命令
-                        cmd_name = road_option.name if hasattr(road_option, 'name') else str(road_option)
-                        cmd = command_map.get(cmd_name, 2)  # 默认Follow
-                        
-                        # 只在命令变化时记录（避免连续Follow被重复计数）
-                        if cmd != prev_cmd:
-                            commands[cmd] += 1
-                            command_sequence.append(cmd)
-                            prev_cmd = cmd
-                    
-                    # 使用实际路径距离进行精确筛选
-                    if route_distance < self.min_distance or route_distance > self.max_distance:
-                        skipped_by_distance += 1
-                        continue
-                    
-                    # 计算路线价值分数（转弯命令更有价值）
-                    turn_count = commands[3] + commands[4]  # Left + Right
-                    straight_count = commands[5]
-                    value_score = turn_count * 3 + straight_count * 2 + commands[2] * 0.5
-                    
-                    candidates.append({
-                        'start_idx': start_idx,
-                        'end_idx': end_idx,
-                        'distance': straight_distance,
-                        'route_distance': route_distance,
-                        'commands': commands,
-                        'command_sequence': command_sequence,
-                        'waypoints': waypoints,
-                        'turn_count': turn_count,
-                        'value_score': value_score
-                    })
-                    
-                except Exception as e:
-                    pass  # 跳过无法规划的路线
-                
-                analyzed += 1
-                if analyzed % 100 == 0:
-                    print(f"  进度: {analyzed}/{total_pairs} ({analyzed/total_pairs*100:.1f}%)")
-        
-        if skipped_by_distance > 0:
-            print(f"  ℹ️  因实际路径距离不符跳过 {skipped_by_distance} 条")
-        
-        return candidates
-    
-    def _select_balanced_routes(self, candidates, target_routes=None):
-        """
-        基于命令平衡选择路线
-        
-        目标：确保各类命令（特别是转弯）有足够的数据
-        
-        参数:
-            candidates: 候选路线列表
-            target_routes: 目标路线数量（None则使用self.target_routes）
-        """
-        if target_routes is None:
-            target_routes = self.target_routes
-        
-        # 统计候选路线的命令分布
-        total_commands = {2: 0, 3: 0, 4: 0, 5: 0}
-        for c in candidates:
-            for cmd, count in c['commands'].items():
-                total_commands[cmd] += count
-        
-        print(f"  候选路线命令分布:")
-        cmd_names = {2: 'Follow', 3: 'Left', 4: 'Right', 5: 'Straight'}
-        for cmd, count in total_commands.items():
-            print(f"    • {cmd_names[cmd]}: {count}")
-        
-        # 计算命令稀缺度（越少越稀缺）
-        total = sum(total_commands.values()) or 1
-        scarcity = {cmd: 1.0 - (count / total) for cmd, count in total_commands.items()}
-        
-        # 为每条路线计算优先级分数
-        # 优先选择包含稀缺命令的路线
-        for c in candidates:
-            priority = 0
-            for cmd, count in c['commands'].items():
-                priority += count * scarcity[cmd] * (3 if cmd in [3, 4] else 1)  # 转弯额外加权
-            c['priority'] = priority
-        
-        # 按优先级排序
-        candidates.sort(key=lambda x: x['priority'], reverse=True)
-        
-        # 选择路线，同时确保起点多样性
-        selected = []
-        used_starts = {}  # 记录每个起点被使用的次数
-        max_per_start = max(3, target_routes // len(self.spawn_points) + 1)
-        
-        # 第一轮：优先选择高价值路线（包含转弯）
-        turn_routes = [c for c in candidates if c['turn_count'] > 0]
-        print(f"  包含转弯的路线: {len(turn_routes)} 条")
-        
-        for c in turn_routes:
-            start = c['start_idx']
-            if used_starts.get(start, 0) < max_per_start:
-                selected.append(c)
-                used_starts[start] = used_starts.get(start, 0) + 1
-                if len(selected) >= target_routes * 0.7:  # 70%配额给转弯路线
-                    break
-        
-        print(f"  已选择 {len(selected)} 条转弯路线")
-        
-        # 第二轮：补充直行和跟随路线
-        remaining = target_routes - len(selected)
-        other_routes = [c for c in candidates if c not in selected]
-        
-        for c in other_routes:
-            start = c['start_idx']
-            if used_starts.get(start, 0) < max_per_start:
-                selected.append(c)
-                used_starts[start] = used_starts.get(start, 0) + 1
-                if len(selected) >= target_routes:
-                    break
-        
-        print(f"  最终选择 {len(selected)} 条路线")
-        
-        # 打印选中路线的命令分布
-        selected_commands = {2: 0, 3: 0, 4: 0, 5: 0}
-        for c in selected:
-            for cmd, count in c['commands'].items():
-                selected_commands[cmd] += count
-        
-        print(f"  选中路线命令分布:")
-        for cmd, count in selected_commands.items():
-            print(f"    • {cmd_names[cmd]}: {count}")
-        
-        return selected
-    
-    def _deduplicate_routes(self, routes, overlap_threshold=None):
-        """
-        路径去重 - 移除重复和高度重叠的路线
-        
-        去重策略：
-        1. 移除完全相同的 (start_idx, end_idx) 对
-        2. 移除路径重叠度超过阈值的路线（基于实际路径waypoints）
-        
-        参数:
-            routes: 路线列表（字典格式，包含 start_idx, end_idx, waypoints 等）
-            overlap_threshold: 路径重叠阈值（0-1），超过此值视为重复，None则使用self.overlap_threshold
-        """
-        if len(routes) <= 1:
-            return routes
-        
-        if overlap_threshold is None:
-            overlap_threshold = self.overlap_threshold
-        
-        # 第一步：移除完全相同的起点-终点对
-        seen_pairs = set()
-        unique_routes = []
-        duplicate_count = 0
-        
-        for route in routes:
-            pair_key = (route['start_idx'], route['end_idx'])
-            if pair_key in seen_pairs:
-                duplicate_count += 1
-                continue
-            seen_pairs.add(pair_key)
-            unique_routes.append(route)
-        
-        if duplicate_count > 0:
-            print(f"  移除了 {duplicate_count} 条完全重复路线（相同起点-终点）")
-        
-        # 第二步：基于路径重叠度去重
-        # 按优先级排序（转弯多的优先保留）
-        unique_routes.sort(key=lambda x: (-x.get('turn_count', 0), -x.get('priority', 0)))
-        
-        deduplicated = []
-        overlap_removed = 0
-        
-        for route in unique_routes:
-            # 检查与已选路线的重叠度
-            is_overlapping = False
-            route_waypoints = route.get('waypoints', [])
-            
-            # 如果没有waypoints信息，直接保留
-            if not route_waypoints:
-                deduplicated.append(route)
-                continue
-            
-            for selected in deduplicated:
-                selected_waypoints = selected.get('waypoints', [])
-                if not selected_waypoints:
-                    continue
-                
-                overlap = self._calculate_route_overlap(route_waypoints, selected_waypoints)
-                if overlap > overlap_threshold:
-                    is_overlapping = True
-                    overlap_removed += 1
-                    break
-            
-            if not is_overlapping:
-                deduplicated.append(route)
-        
-        if overlap_removed > 0:
-            print(f"  移除了 {overlap_removed} 条高重叠路线（重叠度>{overlap_threshold*100:.0f}%）")
-        
-        print(f"  去重后剩余 {len(deduplicated)} 条路线")
-        
-        # 转换为标准格式
-        result = [(r['start_idx'], r['end_idx'], r.get('route_distance', r['distance'])) for r in deduplicated]
-        
-        # 打乱顺序
-        random.shuffle(result)
-        
-        return result
-    
-    def _calculate_route_overlap(self, waypoints1, waypoints2, grid_size=10.0):
-        """
-        计算两条路线的路径重叠度
-        
-        使用网格化方法快速计算（Jaccard相似度）
-        
-        参数:
-            waypoints1: 第一条路线的waypoints列表 [(x, y), ...]
-            waypoints2: 第二条路线的waypoints列表 [(x, y), ...]
-            grid_size: 网格大小（米），用于离散化路径点
-            
-        返回:
-            float: 重叠度 (0-1)，0表示完全不重叠，1表示完全重叠
-        """
-        if not waypoints1 or not waypoints2:
-            return 0.0
-        
-        # 将waypoints转换为网格坐标
-        def to_grid(waypoints):
-            return set((int(x / grid_size), int(y / grid_size)) for x, y in waypoints)
-        
-        grid1 = to_grid(waypoints1)
-        grid2 = to_grid(waypoints2)
-        
-        if not grid1 or not grid2:
-            return 0.0
-        
-        intersection = len(grid1 & grid2)
-        union = len(grid1 | grid2)
-        
-        return intersection / union if union > 0 else 0.0
-    
-    def _generate_basic_smart_routes(self):
-        """
-        基础智能策略（当路径规划器不可用时的回退方案）
-        """
-        print(f"使用基础智能策略...")
-        
-        num_spawns = len(self.spawn_points)
-        route_pairs = []
-        
-        for start_idx in range(num_spawns):
-            start_loc = self.spawn_points[start_idx].location
-            
-            valid_ends = []
-            for end_idx in range(num_spawns):
-                if start_idx == end_idx:
-                    continue
-                
-                end_loc = self.spawn_points[end_idx].location
-                distance = self._calculate_distance(start_loc, end_loc)
-                
-                if self.min_distance <= distance <= self.max_distance:
-                    valid_ends.append((end_idx, distance))
-            
-            if valid_ends:
-                valid_ends.sort(key=lambda x: x[1])
-                num_ends = len(valid_ends)
-                selected_indices = [0, num_ends // 2, num_ends - 1]
-                
-                for idx in selected_indices:
-                    if idx < num_ends:
-                        end_idx, distance = valid_ends[idx]
-                        route_pairs.append((start_idx, end_idx, distance))
-        
-        random.shuffle(route_pairs)
-        return route_pairs
-    
-    def _generate_exhaustive_routes(self, num_spawns):
-        """
-        穷举所有路线组合（带命令平衡、路径去重和数量限制）
-        
-        特点：
-        1. 遍历所有起点-终点组合
-        2. 使用实际路径距离筛选（而非直线距离）
-        3. 分析每条路线的命令分布
-        4. 基于路径重叠度去重
-        5. 按命令平衡排序，优先收集稀缺命令的路线
-        6. 支持 target_routes 数量限制
-        """
-        print(f"策略: 穷举所有组合 + 命令平衡 + 路径去重")
-        print(f"距离范围: {self.min_distance:.0f}m - {self.max_distance:.0f}m（使用实际路径距离）")
-        print(f"目标路线数: {self.target_routes}（0=不限制）")
-        
-        if not AGENTS_AVAILABLE or self.route_planner is None:
-            print("⚠️  路径规划器不可用，使用基础穷举（无命令分析）")
-            return self._generate_basic_exhaustive_routes(num_spawns)
-        
-        # 命令映射
-        command_map = {
-            'LANEFOLLOW': 2,
-            'LEFT': 3,
-            'RIGHT': 4,
-            'STRAIGHT': 5,
-            'CHANGELANELEFT': 2,
-            'CHANGELANERIGHT': 2,
-        }
-        
-        print("\n🔍 第一阶段：分析所有候选路线...")
-        
-        # 收集所有候选路线
-        candidates = []
-        seen_pairs = set()  # 用于去重：只去除完全相同的(start, end)对
-        
-        # 先计算总数（使用直线距离粗筛）
-        total_pairs = 0
-        for start_idx in range(num_spawns):
-            for end_idx in range(num_spawns):
-                if start_idx != end_idx:
-                    start_loc = self.spawn_points[start_idx].location
-                    end_loc = self.spawn_points[end_idx].location
-                    distance = self._calculate_distance(start_loc, end_loc)
-                    # 使用更宽松的直线距离范围进行粗筛（实际路径通常更长）
-                    if distance >= self.min_distance * 0.5 and distance <= self.max_distance * 1.5:
-                        total_pairs += 1
-        
-        print(f"  需要分析约 {total_pairs} 条候选路线...")
-        
-        analyzed = 0
-        skipped_by_distance = 0
-        
-        for start_idx in range(num_spawns):
-            start_loc = self.spawn_points[start_idx].location
-            
-            for end_idx in range(num_spawns):
-                if start_idx == end_idx:
-                    continue
-                
-                # 去重检查：只去除完全相同的(start, end)对
-                pair_key = (start_idx, end_idx)
-                if pair_key in seen_pairs:
-                    continue
-                seen_pairs.add(pair_key)
-                
-                end_loc = self.spawn_points[end_idx].location
-                straight_distance = self._calculate_distance(start_loc, end_loc)
-                
-                # 直线距离粗筛
-                if straight_distance < self.min_distance * 0.5 or straight_distance > self.max_distance * 1.5:
-                    continue
-                
-                # 规划路径并分析命令
-                try:
-                    route = self.route_planner.trace_route(
-                        self.spawn_points[start_idx].location,
-                        self.spawn_points[end_idx].location
-                    )
-                    
-                    if not route or len(route) < 2:
-                        continue
-                    
-                    # 分析命令分布并计算实际路径距离
-                    commands = {2: 0, 3: 0, 4: 0, 5: 0}
-                    waypoints = []
-                    route_distance = 0.0
-                    
-                    prev_cmd = None
-                    for i, (wp, road_option) in enumerate(route):
-                        if i > 0:
-                            prev_wp = route[i-1][0]
-                            route_distance += wp.transform.location.distance(prev_wp.transform.location)
-                        
-                        waypoints.append((wp.transform.location.x, wp.transform.location.y))
-                        
-                        cmd_name = road_option.name if hasattr(road_option, 'name') else str(road_option)
-                        cmd = command_map.get(cmd_name, 2)
-                        
-                        if cmd != prev_cmd:
-                            commands[cmd] += 1
-                            prev_cmd = cmd
-                    
-                    # 使用实际路径距离进行精确筛选
-                    if route_distance < self.min_distance or route_distance > self.max_distance:
-                        skipped_by_distance += 1
-                        continue
-                    
-                    turn_count = commands[3] + commands[4]
-                    
-                    candidates.append({
-                        'start_idx': start_idx,
-                        'end_idx': end_idx,
-                        'distance': straight_distance,
-                        'route_distance': route_distance,
-                        'commands': commands,
-                        'waypoints': waypoints,
-                        'turn_count': turn_count
-                    })
-                    
-                except Exception:
-                    # 无法规划的路线，跳过
-                    pass
-                
-                analyzed += 1
-                if analyzed % 200 == 0:
-                    print(f"  进度: {analyzed}/{total_pairs} ({analyzed/total_pairs*100:.1f}%)")
-        
-        print(f"  ✅ 分析完成，共 {len(candidates)} 条有效路线")
-        if skipped_by_distance > 0:
-            print(f"  ℹ️  因实际路径距离不符跳过 {skipped_by_distance} 条")
-        
-        if not candidates:
-            print("❌ 没有找到有效的候选路线")
-            return []
-        
-        # 第二阶段：路径去重
-        print("\n🔄 第二阶段：路径去重...")
-        deduplicated = self._deduplicate_routes_internal(candidates)
-        
-        # 第三阶段：命令平衡排序和数量限制
-        print("\n🎯 第三阶段：命令平衡排序...")
-        
-        # 统计命令分布
-        total_commands = {2: 0, 3: 0, 4: 0, 5: 0}
-        for c in deduplicated:
-            for cmd, count in c['commands'].items():
-                total_commands[cmd] += count
-        
-        cmd_names = {2: 'Follow', 3: 'Left', 4: 'Right', 5: 'Straight'}
-        print(f"  命令分布:")
-        for cmd, count in total_commands.items():
-            print(f"    • {cmd_names[cmd]}: {count}")
-        
-        # 计算稀缺度
-        total = sum(total_commands.values()) or 1
-        scarcity = {cmd: 1.0 - (count / total) for cmd, count in total_commands.items()}
-        
-        # 为每条路线计算优先级（转弯命令更有价值）
-        for c in deduplicated:
-            priority = 0
-            for cmd, count in c['commands'].items():
-                weight = 3 if cmd in [3, 4] else (2 if cmd == 5 else 0.5)
-                priority += count * scarcity[cmd] * weight
-            c['priority'] = priority
-        
-        # 按优先级排序（高优先级在前）
-        deduplicated.sort(key=lambda x: (-x['turn_count'], -x['priority']))
-        
-        # 应用数量限制
-        if self.target_routes > 0 and len(deduplicated) > self.target_routes:
-            print(f"  应用数量限制: {len(deduplicated)} → {self.target_routes}")
-            deduplicated = deduplicated[:self.target_routes]
-        
-        # 统计排序后的命令分布
-        turn_routes = sum(1 for c in deduplicated if c['turn_count'] > 0)
-        print(f"  包含转弯的路线: {turn_routes} 条 ({turn_routes/len(deduplicated)*100:.1f}%)")
-        
-        # 分组打乱并交替合并
-        turn_candidates = [c for c in deduplicated if c['turn_count'] > 0]
-        other_candidates = [c for c in deduplicated if c['turn_count'] == 0]
-        
-        random.shuffle(turn_candidates)
-        random.shuffle(other_candidates)
-        
-        # 交替合并，确保转弯路线分散在整个收集过程中
-        route_pairs = []
-        turn_ratio = len(turn_candidates) / len(deduplicated) if deduplicated else 0.5
-        ti, oi = 0, 0
-        
-        while ti < len(turn_candidates) or oi < len(other_candidates):
-            if ti < len(turn_candidates) and (oi >= len(other_candidates) or random.random() < turn_ratio):
-                c = turn_candidates[ti]
-                route_pairs.append((c['start_idx'], c['end_idx'], c['route_distance']))
-                ti += 1
-            elif oi < len(other_candidates):
-                c = other_candidates[oi]
-                route_pairs.append((c['start_idx'], c['end_idx'], c['route_distance']))
-                oi += 1
-        
-        print(f"\n✅ 穷举路线生成完成: {len(route_pairs)} 条")
-        print(f"  • 转弯路线: {len(turn_candidates)} 条")
-        print(f"  • 其他路线: {len(other_candidates)} 条")
-        
-        return route_pairs
-    
-    def _deduplicate_routes_internal(self, candidates):
-        """
-        内部去重函数（用于exhaustive模式，保留字典格式）
-        
-        参数:
-            candidates: 候选路线列表（字典格式）
-            
-        返回:
-            list: 去重后的路线列表（字典格式）
-        """
-        if len(candidates) <= 1:
-            return candidates
-        
-        # 按优先级排序（转弯多的优先保留）
-        candidates.sort(key=lambda x: (-x.get('turn_count', 0), -x.get('priority', 0)))
-        
-        deduplicated = []
-        overlap_removed = 0
-        
-        for route in candidates:
-            is_overlapping = False
-            route_waypoints = route.get('waypoints', [])
-            
-            if not route_waypoints:
-                deduplicated.append(route)
-                continue
-            
-            for selected in deduplicated:
-                selected_waypoints = selected.get('waypoints', [])
-                if not selected_waypoints:
-                    continue
-                
-                overlap = self._calculate_route_overlap(route_waypoints, selected_waypoints)
-                if overlap > self.overlap_threshold:
-                    is_overlapping = True
-                    overlap_removed += 1
-                    break
-            
-            if not is_overlapping:
-                deduplicated.append(route)
-        
-        if overlap_removed > 0:
-            print(f"  移除了 {overlap_removed} 条高重叠路线（重叠度>{self.overlap_threshold*100:.0f}%）")
-        
-        print(f"  去重后剩余 {len(deduplicated)} 条路线")
-        return deduplicated
-    
-    def _generate_basic_exhaustive_routes(self, num_spawns):
-        """基础穷举（无命令分析，当路径规划器不可用时使用）"""
-        print(f"使用基础穷举策略...")
-        
-        route_pairs = []
-        for start_idx in range(num_spawns):
-            for end_idx in range(num_spawns):
-                if start_idx == end_idx:
-                    continue
-                
-                start_loc = self.spawn_points[start_idx].location
-                end_loc = self.spawn_points[end_idx].location
-                distance = self._calculate_distance(start_loc, end_loc)
-                
-                if self.min_distance <= distance <= self.max_distance:
-                    route_pairs.append((start_idx, end_idx, distance))
-        
-        print(f"✅ 生成了 {len(route_pairs)} 条基础穷举路线")
-        random.shuffle(route_pairs)
-        return route_pairs
-    
-    def _print_route_statistics(self, route_pairs):
-        """打印路线统计信息"""
-        distances = [d for _, _, d in route_pairs]
-        print(f"\n📊 路线统计:")
-        print(f"  • 总路线数: {len(route_pairs)}")
-        print(f"  • 平均路径距离: {np.mean(distances):.1f}m")
-        print(f"  • 最短路径距离: {np.min(distances):.1f}m")
-        print(f"  • 最长路径距离: {np.max(distances):.1f}m")
-        
-        # 估算收集时间（每条路线约2分钟）
-        estimated_minutes = len(route_pairs) * 2
-        print(f"  • 预计耗时: {estimated_minutes:.0f}分钟 ({estimated_minutes/60:.1f}小时)")
-        print(f"  • ✅ 已打乱路线顺序")
-    
-    def _calculate_distance(self, loc1, loc2):
-        """计算两点之间的直线距离"""
-        dx = loc2.x - loc1.x
-        dy = loc2.y - loc1.y
-        return np.sqrt(dx**2 + dy**2)
+    def _print_config(self):
+        """打印配置信息"""
+        print(f"\n📋 配置信息:")
+        print(f"  • 忽略红绿灯: {'✅' if self.ignore_traffic_lights else '❌'}")
+        print(f"  • 忽略停车标志: {'✅' if self.ignore_signs else '❌'}")
+        print(f"  • 目标速度: {self.target_speed:.1f} km/h")
+        print(f"  • 模拟帧率: {self.simulation_fps} FPS")
+        if self.spawn_npc_vehicles:
+            print(f"  • NPC车辆: {self.num_npc_vehicles}")
+        if self.spawn_npc_walkers:
+            print(f"  • NPC行人: {self.num_npc_walkers}")
     
     def _set_weather(self):
         """设置天气"""
         if not self.weather_config:
-            print(f"  天气: 默认（未配置）")
             return
         
         preset = self.weather_config.get('preset')
-        
-        # 天气预设映射
         weather_presets = {
+            # 正午天气
             'ClearNoon': carla.WeatherParameters.ClearNoon,
             'CloudyNoon': carla.WeatherParameters.CloudyNoon,
             'WetNoon': carla.WeatherParameters.WetNoon,
@@ -925,6 +155,7 @@ class AutoFullTownCollector:
             'SoftRainNoon': carla.WeatherParameters.SoftRainNoon,
             'MidRainyNoon': carla.WeatherParameters.MidRainyNoon,
             'HardRainNoon': carla.WeatherParameters.HardRainNoon,
+            # 日落天气
             'ClearSunset': carla.WeatherParameters.ClearSunset,
             'CloudySunset': carla.WeatherParameters.CloudySunset,
             'WetSunset': carla.WeatherParameters.WetSunset,
@@ -932,6 +163,7 @@ class AutoFullTownCollector:
             'SoftRainSunset': carla.WeatherParameters.SoftRainSunset,
             'MidRainSunset': carla.WeatherParameters.MidRainSunset,
             'HardRainSunset': carla.WeatherParameters.HardRainSunset,
+            # 夜晚天气
             'ClearNight': carla.WeatherParameters.ClearNight,
             'CloudyNight': carla.WeatherParameters.CloudyNight,
             'WetNight': carla.WeatherParameters.WetNight,
@@ -939,510 +171,556 @@ class AutoFullTownCollector:
             'SoftRainNight': carla.WeatherParameters.SoftRainNight,
             'MidRainyNight': carla.WeatherParameters.MidRainyNight,
             'HardRainNight': carla.WeatherParameters.HardRainNight,
+            # 特殊天气
             'DustStorm': carla.WeatherParameters.DustStorm,
         }
         
-        try:
-            if preset and preset in weather_presets:
-                # 使用预设天气
-                self.world.set_weather(weather_presets[preset])
-                print(f"  天气: {preset} (预设)")
-            elif preset is None or preset == 'null' or preset == '':
-                # 使用自定义天气参数
-                custom = self.weather_config.get('custom', {})
-                weather = carla.WeatherParameters(
-                    cloudiness=custom.get('cloudiness', 0.0),
-                    precipitation=custom.get('precipitation', 0.0),
-                    precipitation_deposits=custom.get('precipitation_deposits', 0.0),
-                    wind_intensity=custom.get('wind_intensity', 0.0),
-                    sun_azimuth_angle=custom.get('sun_azimuth_angle', 0.0),
-                    sun_altitude_angle=custom.get('sun_altitude_angle', 75.0),
-                    fog_density=custom.get('fog_density', 0.0),
-                    fog_distance=custom.get('fog_distance', 0.0),
-                    wetness=custom.get('wetness', 0.0)
-                )
-                self.world.set_weather(weather)
-                print(f"  天气: 自定义参数")
-                print(f"    • 云量: {custom.get('cloudiness', 0.0)}%")
-                print(f"    • 降水: {custom.get('precipitation', 0.0)}%")
-                print(f"    • 太阳高度: {custom.get('sun_altitude_angle', 75.0)}°")
-            else:
-                print(f"  ⚠️  未知天气预设: {preset}，使用默认天气")
-        except Exception as e:
-            print(f"  ⚠️  设置天气失败: {e}")
-    
-    def _spawn_npc_walkers(self):
-        """生成NPC行人"""
-        print(f"\n🚶 正在生成 {self.num_npc_walkers} 个NPC行人...")
-        
-        try:
-            # 获取行人蓝图
-            walker_blueprints = self.world.get_blueprint_library().filter('walker.pedestrian.*')
-            
-            # 获取行人生成点
-            spawn_points = []
-            for _ in range(self.num_npc_walkers):
-                spawn_point = carla.Transform()
-                loc = self.world.get_random_location_from_navigation()
-                if loc is not None:
-                    spawn_point.location = loc
-                    spawn_points.append(spawn_point)
-            
-            # 批量生成行人
-            batch = []
-            for spawn_point in spawn_points:
-                walker_bp = random.choice(walker_blueprints)
-                # 设置行人为不可碰撞（避免阻挡数据收集车辆）
-                if walker_bp.has_attribute('is_invincible'):
-                    walker_bp.set_attribute('is_invincible', 'false')
-                batch.append(carla.command.SpawnActor(walker_bp, spawn_point))
-            
-            # 执行批量生成
-            results = self.client.apply_batch_sync(batch, True)
-            walkers_list = []
-            for i, result in enumerate(results):
-                if not result.error:
-                    walkers_list.append(result.actor_id)
-            
-            # 生成行人控制器
-            walker_controller_bp = self.world.get_blueprint_library().find('controller.ai.walker')
-            batch = []
-            for walker_id in walkers_list:
-                batch.append(carla.command.SpawnActor(walker_controller_bp, carla.Transform(), walker_id))
-            
-            results = self.client.apply_batch_sync(batch, True)
-            for i, result in enumerate(results):
-                if not result.error:
-                    self.walker_controllers.append(result.actor_id)
-            
-            # 获取所有行人actor
-            all_actors = self.world.get_actors(walkers_list)
-            for actor in all_actors:
-                self.npc_walkers.append(actor)
-            
-            # 启动行人AI
-            self.world.tick()  # 确保控制器已生成
-            controller_actors = self.world.get_actors(self.walker_controllers)
-            for controller in controller_actors:
-                # 设置行人目标点和速度
-                controller.start()
-                controller.go_to_location(self.world.get_random_location_from_navigation())
-                controller.set_max_speed(1.0 + random.random())  # 1-2 m/s
-            
-            print(f"✅ 成功生成 {len(self.npc_walkers)} 个NPC行人")
-            
-        except Exception as e:
-            print(f"⚠️  生成NPC行人时出错: {e}")
-    
-    def _cleanup_npc_walkers(self):
-        """清理NPC行人"""
-        if self.npc_walkers or self.walker_controllers:
-            print(f"\n🧹 正在清理NPC行人...")
-            
-            # 先停止控制器
-            controller_actors = self.world.get_actors(self.walker_controllers)
-            for controller in controller_actors:
-                try:
-                    controller.stop()
-                except:
-                    pass
-            
-            # 销毁控制器
-            for controller_id in self.walker_controllers:
-                try:
-                    actor = self.world.get_actor(controller_id)
-                    if actor:
-                        actor.destroy()
-                except:
-                    pass
-            
-            # 销毁行人
-            for walker in self.npc_walkers:
-                try:
-                    walker.destroy()
-                except:
-                    pass
-            
-            self.npc_walkers = []
-            self.walker_controllers = []
-            print("✅ NPC行人清理完成")
+        if preset and preset in weather_presets:
+            self.world.set_weather(weather_presets[preset])
+            print(f"  天气: {preset}")
+        elif preset:
+            print(f"  ⚠️ 未知天气预设: {preset}，使用默认天气")
     
     def _spawn_npc_vehicles(self):
         """生成NPC车辆"""
         print(f"\n🚗 正在生成 {self.num_npc_vehicles} 辆NPC车辆...")
         
-        try:
-            # 获取车辆蓝图
-            blueprints = self.world.get_blueprint_library().filter('vehicle.*')
-            blueprints = [x for x in blueprints if int(x.get_attribute('number_of_wheels')) == 4]
-            
-            # 获取可用的生成点
-            spawn_points = self.world.get_map().get_spawn_points()
-            random.shuffle(spawn_points)
-            
-            # 生成车辆
-            spawned_count = 0
-            for i in range(min(self.num_npc_vehicles, len(spawn_points))):
-                blueprint = random.choice(blueprints)
-                
-                # 设置自动驾驶
-                if blueprint.has_attribute('color'):
-                    color = random.choice(blueprint.get_attribute('color').recommended_values)
-                    blueprint.set_attribute('color', color)
-                
-                # 尝试生成车辆
-                npc = self.world.try_spawn_actor(blueprint, spawn_points[i])
-                if npc is not None:
-                    npc.set_autopilot(True)
-                    self.npc_vehicles.append(npc)
-                    spawned_count += 1
-            
-            print(f"✅ 成功生成 {spawned_count} 辆NPC车辆")
-            
-        except Exception as e:
-            print(f"⚠️  生成NPC车辆时出错: {e}")
-    
-    def _cleanup_npc_vehicles(self):
-        """清理NPC车辆"""
-        if self.npc_vehicles:
-            print(f"\n🧹 正在清理 {len(self.npc_vehicles)} 辆NPC车辆...")
-            for vehicle in self.npc_vehicles:
-                try:
-                    vehicle.destroy()
-                except:
-                    pass
-            self.npc_vehicles = []
-            print("✅ NPC车辆清理完成")
-    
-    def validate_route(self, start_idx, end_idx):
-        """
-        验证路线是否可行
+        blueprints = [x for x in self.blueprint_library.filter('vehicle.*')
+                      if int(x.get_attribute('number_of_wheels')) == 4]
+        spawn_points = self.world.get_map().get_spawn_points()
+        random.shuffle(spawn_points)
         
-        参数:
-            start_idx (int): 起点索引
-            end_idx (int): 终点索引
+        for i in range(min(self.num_npc_vehicles, len(spawn_points))):
+            bp = random.choice(blueprints)
+            if bp.has_attribute('color'):
+                bp.set_attribute('color', random.choice(bp.get_attribute('color').recommended_values))
             
-        返回:
-            tuple: (是否可行, 路径数据, 路径长度)
-        """
+            npc = self.world.try_spawn_actor(bp, spawn_points[i])
+            if npc:
+                npc.set_autopilot(True)
+                self.npc_vehicles.append(npc)
+        
+        print(f"✅ 成功生成 {len(self.npc_vehicles)} 辆NPC车辆")
+    
+    def _spawn_npc_walkers(self):
+        """生成NPC行人"""
+        print(f"\n🚶 正在生成 {self.num_npc_walkers} 个NPC行人...")
+        
+        walker_bps = self.blueprint_library.filter('walker.pedestrian.*')
+        spawn_points = []
+        
+        for _ in range(self.num_npc_walkers):
+            loc = self.world.get_random_location_from_navigation()
+            if loc:
+                spawn_points.append(carla.Transform(location=loc))
+        
+        batch = [carla.command.SpawnActor(random.choice(walker_bps), sp) for sp in spawn_points]
+        results = self.client.apply_batch_sync(batch, True)
+        walker_ids = [r.actor_id for r in results if not r.error]
+        
+        controller_bp = self.blueprint_library.find('controller.ai.walker')
+        batch = [carla.command.SpawnActor(controller_bp, carla.Transform(), wid) for wid in walker_ids]
+        results = self.client.apply_batch_sync(batch, True)
+        self.walker_controllers = [r.actor_id for r in results if not r.error]
+        
+        self.world.tick()
+        for ctrl in self.world.get_actors(self.walker_controllers):
+            ctrl.start()
+            ctrl.go_to_location(self.world.get_random_location_from_navigation())
+            ctrl.set_max_speed(1.0 + random.random())
+        
+        self.npc_walkers = list(self.world.get_actors(walker_ids))
+        print(f"✅ 成功生成 {len(self.npc_walkers)} 个NPC行人")
+    
+    def _cleanup_npcs(self):
+        """清理NPC"""
+        for ctrl_id in self.walker_controllers:
+            try:
+                ctrl = self.world.get_actor(ctrl_id)
+                if ctrl:
+                    ctrl.stop()
+                    ctrl.destroy()
+            except:
+                pass
+        
+        for walker in self.npc_walkers:
+            try:
+                walker.destroy()
+            except:
+                pass
+        
+        for vehicle in self.npc_vehicles:
+            try:
+                vehicle.destroy()
+            except:
+                pass
+        
+        self.npc_vehicles = []
+        self.npc_walkers = []
+        self.walker_controllers = []
+    
+    def generate_route_pairs(self):
+        """生成路线对"""
+        print("\n" + "="*70)
+        print("🛣️ 生成路线对")
+        print("="*70)
+        
+        if self.route_generation_strategy == 'smart':
+            route_pairs = self._generate_smart_routes()
+        else:
+            route_pairs = self._generate_exhaustive_routes()
+        
+        if route_pairs:
+            self._print_route_statistics(route_pairs)
+        
+        return route_pairs
+    
+    def _generate_smart_routes(self):
+        """智能路线生成"""
+        print(f"策略: 🧠 智能选择")
+        
         if not AGENTS_AVAILABLE or self.route_planner is None:
-            return True, None, 0.0  # 无法验证，假设可行
+            return self._generate_basic_routes()
         
-        try:
-            start_point = self.spawn_points[start_idx]
-            end_point = self.spawn_points[end_idx]
-            
-            # 规划路径
-            route = self.route_planner.trace_route(
-                start_point.location, 
-                end_point.location
-            )
-            
-            if not route or len(route) == 0:
-                return False, None, 0.0
-            
-            # 计算路径长度
-            route_distance = 0.0
-            for i in range(len(route) - 1):
-                wp1 = route[i][0].transform.location
-                wp2 = route[i+1][0].transform.location
-                route_distance += wp1.distance(wp2)
-            
-            return True, route, route_distance
-            
-        except Exception as e:
-            print(f"⚠️  路径验证失败: {e}")
-            return False, None, 0.0
+        candidates = self._analyze_candidate_routes()
+        if not candidates:
+            return []
+        
+        selected = self._select_balanced_routes(candidates)
+        return self._deduplicate_routes(selected)
     
-    def collect_route_data(self, start_idx, end_idx, route_data, save_path):
-        """
-        收集单条路线的数据（全自动）
+    def _analyze_candidate_routes(self):
+        """分析候选路线（优化版：添加进度显示和采样）"""
+        print("\n🔍 分析候选路线...")
         
-        参数:
-            start_idx (int): 起点索引
-            end_idx (int): 终点索引
-            route_data: 路径数据
-            save_path (str): 保存路径
+        candidates = []
+        command_map = {'LANEFOLLOW': 2, 'LEFT': 3, 'RIGHT': 4, 'STRAIGHT': 5,
+                       'CHANGELANELEFT': 2, 'CHANGELANERIGHT': 2}
+        
+        num_spawns = len(self.spawn_points)
+        total_pairs = num_spawns * (num_spawns - 1)
+        
+        # 如果组合太多，使用采样策略
+        max_candidates_to_check = 5000  # 最多检查5000条路线
+        use_sampling = total_pairs > max_candidates_to_check
+        
+        if use_sampling:
+            print(f"  ⚡ 组合数过多 ({total_pairs})，使用采样策略...")
+            # 随机采样起点-终点对
+            all_pairs = [(i, j) for i in range(num_spawns) for j in range(num_spawns) if i != j]
+            random.shuffle(all_pairs)
+            pairs_to_check = all_pairs[:max_candidates_to_check]
+        else:
+            pairs_to_check = [(i, j) for i in range(num_spawns) for j in range(num_spawns) if i != j]
+        
+        checked = 0
+        last_progress = 0
+        
+        for start_idx, end_idx in pairs_to_check:
+            checked += 1
             
-        返回:
-            bool: 是否成功
-        """
+            # 每10%显示进度
+            progress = int(checked / len(pairs_to_check) * 100)
+            if progress >= last_progress + 10:
+                print(f"  📊 进度: {progress}% ({checked}/{len(pairs_to_check)}), 已找到 {len(candidates)} 条")
+                last_progress = progress
+            
+            start_loc = self.spawn_points[start_idx].location
+            end_loc = self.spawn_points[end_idx].location
+            distance = self._calculate_distance(start_loc, end_loc)
+            
+            if distance < self.min_distance * 0.5 or distance > self.max_distance * 1.5:
+                continue
+            
+            try:
+                route = self.route_planner.trace_route(start_loc, end_loc)
+                if not route or len(route) < 2:
+                    continue
+                
+                commands = {2: 0, 3: 0, 4: 0, 5: 0}
+                waypoints = []
+                route_distance = 0.0
+                prev_cmd = None
+                
+                for i, (wp, road_option) in enumerate(route):
+                    if i > 0:
+                        route_distance += wp.transform.location.distance(route[i-1][0].transform.location)
+                    waypoints.append((wp.transform.location.x, wp.transform.location.y))
+                    
+                    cmd_name = road_option.name if hasattr(road_option, 'name') else str(road_option)
+                    cmd = command_map.get(cmd_name, 2)
+                    if cmd != prev_cmd:
+                        commands[cmd] += 1
+                        prev_cmd = cmd
+                
+                if route_distance < self.min_distance or route_distance > self.max_distance:
+                    continue
+                
+                candidates.append({
+                    'start_idx': start_idx, 'end_idx': end_idx,
+                    'distance': distance, 'route_distance': route_distance,
+                    'commands': commands, 'waypoints': waypoints,
+                    'turn_count': commands[3] + commands[4]
+                })
+                
+                # 如果已经找到足够多的候选路线，提前结束
+                # 注意：target_routes=0 表示不限制，不应提前退出
+                if self.target_routes > 0 and len(candidates) >= self.target_routes * 3:
+                    print(f"  ⚡ 已找到足够候选路线，提前结束分析")
+                    break
+                    
+            except:
+                pass
+        
+        print(f"  ✅ 找到 {len(candidates)} 条候选路线")
+        return candidates
+    
+    def _select_balanced_routes(self, candidates):
+        """命令平衡选择"""
+        total_commands = {2: 0, 3: 0, 4: 0, 5: 0}
+        for c in candidates:
+            for cmd, count in c['commands'].items():
+                total_commands[cmd] += count
+        
+        total = sum(total_commands.values()) or 1
+        scarcity = {cmd: 1.0 - (count / total) for cmd, count in total_commands.items()}
+        
+        for c in candidates:
+            c['priority'] = sum(count * scarcity[cmd] * (3 if cmd in [3, 4] else 1)
+                               for cmd, count in c['commands'].items())
+        
+        candidates.sort(key=lambda x: x['priority'], reverse=True)
+        
+        selected = []
+        used_starts = {}
+        max_per_start = max(3, self.target_routes // len(self.spawn_points) + 1)
+        
+        for c in candidates:
+            if used_starts.get(c['start_idx'], 0) < max_per_start:
+                selected.append(c)
+                used_starts[c['start_idx']] = used_starts.get(c['start_idx'], 0) + 1
+                # 注意：target_routes=0 表示不限制，选择所有候选路线
+                if self.target_routes > 0 and len(selected) >= self.target_routes:
+                    break
+        
+        return selected
+    
+    def _deduplicate_routes(self, routes):
+        """路径去重"""
+        if len(routes) <= 1:
+            return [(r['start_idx'], r['end_idx'], r.get('route_distance', r['distance'])) for r in routes]
+        
+        routes.sort(key=lambda x: (-x.get('turn_count', 0), -x.get('priority', 0)))
+        
+        deduplicated = []
+        for route in routes:
+            is_overlapping = False
+            route_wps = route.get('waypoints', [])
+            
+            if route_wps:
+                for selected in deduplicated:
+                    sel_wps = selected.get('waypoints', [])
+                    if sel_wps and self._calculate_overlap(route_wps, sel_wps) > self.overlap_threshold:
+                        is_overlapping = True
+                        break
+            
+            if not is_overlapping:
+                deduplicated.append(route)
+        
+        result = [(r['start_idx'], r['end_idx'], r.get('route_distance', r['distance'])) for r in deduplicated]
+        random.shuffle(result)
+        return result
+    
+    def _calculate_overlap(self, wps1, wps2, grid_size=10.0):
+        """计算路径重叠度"""
+        def to_grid(wps):
+            return set((int(x / grid_size), int(y / grid_size)) for x, y in wps)
+        
+        g1, g2 = to_grid(wps1), to_grid(wps2)
+        if not g1 or not g2:
+            return 0.0
+        return len(g1 & g2) / len(g1 | g2)
+    
+    def _generate_basic_routes(self):
+        """基础路线生成"""
+        route_pairs = []
+        for start_idx, sp in enumerate(self.spawn_points):
+            valid_ends = []
+            for end_idx, ep in enumerate(self.spawn_points):
+                if start_idx != end_idx:
+                    d = self._calculate_distance(sp.location, ep.location)
+                    if self.min_distance <= d <= self.max_distance:
+                        valid_ends.append((end_idx, d))
+            
+            if valid_ends:
+                valid_ends.sort(key=lambda x: x[1])
+                for idx in [0, len(valid_ends)//2, len(valid_ends)-1]:
+                    if idx < len(valid_ends):
+                        route_pairs.append((start_idx, valid_ends[idx][0], valid_ends[idx][1]))
+        
+        random.shuffle(route_pairs)
+        return route_pairs
+    
+    def _generate_exhaustive_routes(self):
+        """穷举路线生成 - 生成所有满足距离条件的起点-终点组合"""
+        print(f"策略: 📋 穷举模式")
+        
+        route_pairs = []
+        num_spawns = len(self.spawn_points)
+        
+        print(f"  正在分析 {num_spawns * (num_spawns - 1)} 个起点-终点组合...")
+        
+        for start_idx, sp in enumerate(self.spawn_points):
+            for end_idx, ep in enumerate(self.spawn_points):
+                if start_idx == end_idx:
+                    continue
+                
+                # 计算直线距离作为初步筛选
+                d = self._calculate_distance(sp.location, ep.location)
+                if self.min_distance <= d <= self.max_distance:
+                    # 如果有路径规划器，验证路线可达性并获取实际距离
+                    if AGENTS_AVAILABLE and self.route_planner is not None:
+                        try:
+                            route = self.route_planner.trace_route(sp.location, ep.location)
+                            if route and len(route) >= 2:
+                                # 计算实际路径距离
+                                route_distance = sum(
+                                    route[i][0].transform.location.distance(route[i-1][0].transform.location)
+                                    for i in range(1, len(route))
+                                )
+                                if self.min_distance <= route_distance <= self.max_distance:
+                                    route_pairs.append((start_idx, end_idx, route_distance))
+                        except:
+                            # 规划失败，使用直线距离
+                            route_pairs.append((start_idx, end_idx, d))
+                    else:
+                        route_pairs.append((start_idx, end_idx, d))
+            
+            # 显示进度
+            if (start_idx + 1) % 50 == 0:
+                print(f"  进度: {start_idx + 1}/{num_spawns}, 已找到 {len(route_pairs)} 条路线")
+        
+        print(f"  ✅ 穷举完成，共找到 {len(route_pairs)} 条有效路线")
+        
+        # 如果设置了目标路线数，随机选择
+        if self.target_routes > 0 and len(route_pairs) > self.target_routes:
+            random.shuffle(route_pairs)
+            route_pairs = route_pairs[:self.target_routes]
+            print(f"  📊 已随机选择 {self.target_routes} 条路线")
+        else:
+            random.shuffle(route_pairs)
+        
+        return route_pairs
+    
+    def _calculate_distance(self, loc1, loc2):
+        """计算两点距离"""
+        return np.sqrt((loc2.x - loc1.x)**2 + (loc2.y - loc1.y)**2)
+    
+    def _print_route_statistics(self, route_pairs):
+        """打印路线统计"""
+        distances = [d for _, _, d in route_pairs]
+        print(f"\n📊 路线统计:")
+        print(f"  • 总路线数: {len(route_pairs)}")
+        print(f"  • 平均距离: {np.mean(distances):.1f}m")
+        print(f"  • 预计耗时: {len(route_pairs) * 2:.0f}分钟")
+
+    def collect_route_data(self, start_idx, end_idx, save_path):
+        """收集单条路线数据"""
         print(f"\n{'='*70}")
-        print(f"📊 收集路线数据: {start_idx} → {end_idx}")
+        print(f"📊 收集路线: {start_idx} → {end_idx}")
         print(f"{'='*70}")
         
         try:
-            # 创建数据收集器（使用配置的参数）
-            self.collector = CommandBasedDataCollector(
-                host=self.host,
-                port=self.port,
-                town=self.town,
+            # 创建内部收集器
+            from command_based_data_collection import CommandBasedDataCollector
+            self._inner_collector = CommandBasedDataCollector(
+                host=self.host, port=self.port, town=self.town,
                 ignore_traffic_lights=self.ignore_traffic_lights,
                 ignore_signs=self.ignore_signs,
                 ignore_vehicles_percentage=self.ignore_vehicles_percentage,
-                target_speed=self.target_speed  # 使用配置的目标速度
+                target_speed=self.target_speed,
+                simulation_fps=self.simulation_fps
             )
             
-            # 复用已有的连接
-            self.collector.client = self.client
-            self.collector.world = self.world
-            self.collector.blueprint_library = self.world.get_blueprint_library()
+            # 复用连接
+            self._inner_collector.client = self.client
+            self._inner_collector.world = self.world
+            self._inner_collector.blueprint_library = self.blueprint_library
             
-            # 设置同步模式（使用配置的帧率）
+            # 设置同步模式
             settings = self.world.get_settings()
             if not settings.synchronous_mode:
                 settings.synchronous_mode = True
-                settings.fixed_delta_seconds = 1.0 / self.simulation_fps  # 根据配置的FPS计算
+                settings.fixed_delta_seconds = 1.0 / self.simulation_fps
                 self.world.apply_settings(settings)
-                print(f"✅ 已设置同步模式: {self.simulation_fps} FPS (delta={settings.fixed_delta_seconds:.4f}s)")
             
-            # 生成车辆
-            if not self.collector.spawn_vehicle(start_idx, end_idx):
-                print("❌ 无法生成车辆！")
+            if not self._inner_collector.spawn_vehicle(start_idx, end_idx):
                 return False
             
-            # 设置摄像头
-            self.collector.setup_camera()
-            
-            # 等待传感器准备
-            print("等待传感器准备...")
+            self._inner_collector.setup_camera()
             time.sleep(1.0)
             
-            # 开始自动收集数据（启用可视化）
-            print(f"🎬 开始自动收集数据...")
-            success = self._auto_collect_data(save_path, enable_visualization=True)
+            # 配置噪声（从自身配置传递到内部收集器，包括参数）
+            self._inner_collector.configure_noise(
+                enabled=self.noise_enabled,
+                lateral_enabled=self.lateral_noise_enabled,
+                longitudinal_enabled=self.longitudinal_noise_enabled,
+                lateral_frequency=self.lateral_frequency,
+                lateral_intensity=self.lateral_intensity,
+                lateral_min_time=self.lateral_min_time,
+                longitudinal_frequency=self.longitudinal_frequency,
+                longitudinal_intensity=self.longitudinal_intensity,
+                longitudinal_min_time=self.longitudinal_min_time
+            )
             
+            success = self._auto_collect(save_path)
             return success
             
         except Exception as e:
-            print(f"❌ 收集数据出错: {e}")
+            print(f"❌ 收集出错: {e}")
             import traceback
             traceback.print_exc()
             return False
         finally:
-            # 清理资源
-            if self.collector:
-                print("正在清理车辆和传感器...")
-                try:
-                    if self.collector.camera is not None:
-                        self.collector.camera.stop()
-                        self.collector.camera.destroy()
-                except:
-                    pass
-                    
-                try:
-                    if self.collector.vehicle is not None:
-                        self.collector.vehicle.destroy()
-                except:
-                    pass
-                
-                print("✅ 清理完成")
+            self._cleanup_inner_collector()
     
-    def _auto_collect_data(self, save_path, enable_visualization=True):
-        """
-        自动收集数据（带可视化窗口）
-        
-        策略：
-        1. 自动收集所有命令段
-        2. 每200帧自动保存
-        3. 到达终点或达到帧数限制后停止
-        4. 实时显示可视化窗口
-        
-        参数:
-            save_path (str): 保存路径
-            enable_visualization (bool): 是否启用可视化
-            
-        返回:
-            bool: 是否成功
-        """
-        import cv2
-        
+    def _cleanup_inner_collector(self):
+        """清理内部收集器"""
+        if self._inner_collector:
+            try:
+                if self._inner_collector.camera:
+                    self._inner_collector.camera.stop()
+                    self._inner_collector.camera.destroy()
+            except:
+                pass
+            try:
+                if self._inner_collector.vehicle:
+                    self._inner_collector.vehicle.destroy()
+            except:
+                pass
+            self._inner_collector = None
+    
+    def _auto_collect(self, save_path):
+        """自动收集数据"""
         os.makedirs(save_path, exist_ok=True)
         
-        # 启用可视化
-        self.collector.enable_visualization = enable_visualization
-        if enable_visualization:
-            print("✅ 已启用实时可视化窗口")
-            print("💡 提示：按ESC键可关闭可视化窗口（数据收集继续）\n")
-        
-        # 等待第一帧
-        print("等待第一帧图像...")
-        while len(self.collector.image_buffer) == 0:
-            if self.collector.agent is not None:
-                control = self.collector.agent.run_step()
-                self.collector.vehicle.apply_control(control)
-            self.world.tick()
-            time.sleep(0.01)
-        
-        print("摄像头就绪！开始收集...\n")
+        self._inner_collector.enable_visualization = True
+        self._inner_collector.wait_for_first_frame()
         
         collected_frames = 0
-        max_frames = self.frames_per_route
-        current_segment_data = {'rgb': [], 'targets': []}
+        segment_data = {'rgb': [], 'targets': []}
         segment_count = 0
-        
-        # 获取初始命令
-        current_command = self.collector._get_navigation_command()
+        segment_start_cmd = None  # 记录segment开始时的command
         
         try:
-            while collected_frames < max_frames:
-                # 推进模拟
-                if self.collector.agent is not None:
-                    control = self.collector.agent.run_step()
-                    self.collector.vehicle.apply_control(control)
-                self.world.tick()
+            while collected_frames < self.frames_per_route:
+                self._inner_collector.step_simulation()
                 
-                # 检查是否到达终点
-                if self.collector._is_route_completed():
+                if self._inner_collector._is_route_completed():
                     print(f"\n🎯 已到达目的地！")
                     break
                 
-                if len(self.collector.image_buffer) == 0:
+                if len(self._inner_collector.image_buffer) == 0:
                     continue
                 
-                # 获取数据 - 必须复制图像，否则所有帧都会指向同一个数组！
-                current_image = self.collector.image_buffer[-1].copy()
-                vehicle_velocity = self.collector.vehicle.get_velocity()
-                vehicle_control = self.collector.vehicle.get_control()
+                current_image = self._inner_collector.image_buffer[-1].copy()
+                speed_kmh = self._inner_collector._get_vehicle_speed()
+                current_cmd = self._inner_collector._get_navigation_command()
                 
-                speed_kmh = 3.6 * np.sqrt(
-                    vehicle_velocity.x**2 + 
-                    vehicle_velocity.y**2 + 
-                    vehicle_velocity.z**2
-                )
-                
-                # 获取当前命令
-                current_cmd = self.collector._get_navigation_command()
-                
-                # 构建targets
-                targets = np.zeros(25, dtype=np.float32)
-                targets[0] = vehicle_control.steer
-                targets[1] = vehicle_control.throttle
-                targets[2] = vehicle_control.brake
-                targets[10] = speed_kmh
-                targets[24] = current_cmd
-                
-                # 数据质量检查
                 if current_image.mean() < 5 or speed_kmh > 150:
                     continue
                 
-                # 添加到当前段
-                current_segment_data['rgb'].append(current_image)
-                current_segment_data['targets'].append(targets)
+                targets = self._inner_collector._build_targets(speed_kmh, current_cmd)
+                
+                # 记录segment开始时的command（用于文件命名）
+                if segment_count == 0:
+                    segment_start_cmd = current_cmd
+                
+                segment_data['rgb'].append(current_image)
+                segment_data['targets'].append(targets)
                 segment_count += 1
                 collected_frames += 1
                 
-                # 可视化（如果启用）
-                if self.collector.enable_visualization:
-                    self.collector._visualize_frame(
-                        current_image, 
-                        speed_kmh, 
-                        current_cmd, 
-                        collected_frames, 
-                        max_frames,
-                        is_collecting=True
+                if self._inner_collector.enable_visualization:
+                    self._inner_collector.segment_count = segment_count
+                    self._inner_collector._visualize_frame(
+                        current_image, speed_kmh, current_cmd,
+                        collected_frames, self.frames_per_route, is_collecting=True
                     )
                 
-                # 每200帧自动保存
+                # 每200帧保存，使用segment开始时的command
                 if segment_count >= 200:
-                    print(f"💾 自动保存数据段（{segment_count} 帧）...")
-                    self._save_segment_auto(current_segment_data, save_path, current_cmd)
-                    
-                    # 重置当前段
-                    current_segment_data = {'rgb': [], 'targets': []}
+                    self._save_segment_auto(segment_data, save_path, segment_start_cmd)
+                    segment_data = {'rgb': [], 'targets': []}
                     segment_count = 0
+                    segment_start_cmd = None
                 
-                # 进度显示
                 if collected_frames % 100 == 0:
-                    cmd_name = self.collector.command_names.get(int(current_cmd), 'Unknown')
-                    print(f"  [收集中] 帧数: {collected_frames}/{max_frames}, "
-                          f"命令: {cmd_name}, 速度: {speed_kmh:.1f} km/h")
+                    print(f"  [收集中] 帧数: {collected_frames}/{self.frames_per_route}")
             
-            # 保存剩余数据（使用最后一帧的命令，而不是初始命令）
+            # 保存剩余数据，使用segment开始时的command
             if segment_count > 0:
-                print(f"💾 保存剩余数据（{segment_count} 帧）...")
-                self._save_segment_auto(current_segment_data, save_path, current_cmd)
+                self._save_segment_auto(segment_data, save_path, segment_start_cmd if segment_start_cmd else current_cmd)
             
-            print(f"✅ 路线收集完成！总帧数: {collected_frames}")
+            print(f"✅ 路线完成！帧数: {collected_frames}")
             self.total_frames_collected += collected_frames
             return True
             
         except Exception as e:
             print(f"❌ 自动收集出错: {e}")
-            import traceback
-            traceback.print_exc()
             return False
         finally:
-            # 关闭可视化窗口
-            if self.collector.enable_visualization:
-                try:
-                    import cv2
-                    cv2.destroyAllWindows()
-                except:
-                    pass
+            cv2.destroyAllWindows()
     
     def _save_segment_auto(self, segment_data, save_path, command):
-        """
-        自动保存数据段
-        
-        参数:
-            segment_data (dict): 数据段
-            save_path (str): 保存路径
-            command (float): 命令类型
-        """
+        """自动保存数据段"""
         if len(segment_data['rgb']) == 0:
             return
         
-        import h5py
-        
-        # 转换为numpy数组
-        rgb_array = np.array(segment_data['rgb'], dtype=np.uint8)
-        targets_array = np.array(segment_data['targets'], dtype=np.float32)
-        
-        # 生成文件名
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        command_name = self.collector.command_names.get(int(command), 'Unknown')
-        filename = os.path.join(
-            save_path,
-            f"carla_cmd{command}_{command_name}_{timestamp}.h5"
+        self._inner_collector._save_data_to_h5(
+            segment_data['rgb'], segment_data['targets'],
+            save_path, command
         )
+    
+    def validate_route(self, start_idx, end_idx):
+        """验证路线可行性"""
+        if not AGENTS_AVAILABLE or self.route_planner is None:
+            return True, None, 0.0
         
-        # 保存
-        with h5py.File(filename, 'w') as hf:
-            hf.create_dataset('rgb', data=rgb_array, compression='gzip', compression_opts=4)
-            hf.create_dataset('targets', data=targets_array, compression='gzip', compression_opts=4)
-        
-        file_size_mb = os.path.getsize(filename) / 1024 / 1024
-        print(f"  ✓ 已保存: {os.path.basename(filename)} ({len(rgb_array)} 样本, {file_size_mb:.2f} MB)")
+        try:
+            route = self.route_planner.trace_route(
+                self.spawn_points[start_idx].location,
+                self.spawn_points[end_idx].location
+            )
+            
+            if not route:
+                return False, None, 0.0
+            
+            route_distance = sum(
+                route[i][0].transform.location.distance(route[i-1][0].transform.location)
+                for i in range(1, len(route))
+            )
+            return True, route, route_distance
+        except:
+            return False, None, 0.0
     
     def run(self, save_path='./auto_collected_data', strategy='smart'):
-        """
-        运行全自动收集流程
-        
-        参数:
-            save_path (str): 数据保存路径
-            strategy (str): 路线生成策略 ('smart' 或 'exhaustive')
-        """
+        """运行全自动收集"""
         self.route_generation_strategy = strategy
         
         try:
-            # 步骤1: 连接CARLA
             self.connect()
-            
-            # 步骤2: 生成路线对
             route_pairs = self.generate_route_pairs()
             
             if not route_pairs:
                 print("❌ 没有生成任何路线！")
                 return
             
-            # 步骤3: 遍历所有路线并收集数据
             print("\n" + "="*70)
             print("🚀 开始全自动数据收集")
             print("="*70)
             print(f"总路线数: {len(route_pairs)}")
             print(f"保存路径: {save_path}")
-            print(f"每条路线帧数: {self.frames_per_route}")
             print("="*70 + "\n")
             
             start_time = time.time()
@@ -1450,434 +728,131 @@ class AutoFullTownCollector:
             for idx, (start_idx, end_idx, distance) in enumerate(route_pairs):
                 self.total_routes_attempted += 1
                 
-                print(f"\n{'='*70}")
-                print(f"📍 路线 {idx+1}/{len(route_pairs)}")
-                print(f"{'='*70}")
-                print(f"起点: #{start_idx}")
-                print(f"终点: #{end_idx}")
-                print(f"直线距离: {distance:.1f}m")
+                print(f"\n📍 路线 {idx+1}/{len(route_pairs)}: {start_idx} → {end_idx} ({distance:.1f}m)")
                 
-                # 验证路线
-                print("验证路线可行性...")
-                valid, route_data, route_distance = self.validate_route(start_idx, end_idx)
-                
+                valid, _, route_dist = self.validate_route(start_idx, end_idx)
                 if not valid:
-                    print(f"❌ 路线不可行，跳过")
-                    self.failed_routes.append((start_idx, end_idx, "路线不可达"))
+                    self.failed_routes.append((start_idx, end_idx, "不可达"))
                     continue
                 
-                if route_data:
-                    print(f"✅ 路线可行，实际长度: {route_distance:.1f}m")
-                
-                # 收集数据
-                success = self.collect_route_data(start_idx, end_idx, route_data, save_path)
-                
-                if success:
+                if self.collect_route_data(start_idx, end_idx, save_path):
                     self.total_routes_completed += 1
-                    print(f"✅ 路线 {idx+1} 完成")
                 else:
-                    print(f"❌ 路线 {idx+1} 失败")
                     self.failed_routes.append((start_idx, end_idx, "收集失败"))
                 
-                # 显示进度
+                # 进度
                 elapsed = time.time() - start_time
-                avg_time_per_route = elapsed / (idx + 1)
-                remaining_routes = len(route_pairs) - (idx + 1)
-                estimated_remaining = avg_time_per_route * remaining_routes
-                
-                print(f"\n📊 总体进度:")
-                print(f"  • 已完成: {idx+1}/{len(route_pairs)} ({(idx+1)/len(route_pairs)*100:.1f}%)")
-                print(f"  • 成功: {self.total_routes_completed}")
-                print(f"  • 失败: {len(self.failed_routes)}")
-                print(f"  • 已用时: {elapsed/60:.1f}分钟")
-                print(f"  • 预计剩余: {estimated_remaining/60:.1f}分钟")
-                print(f"  • 总帧数: {self.total_frames_collected}")
+                remaining = elapsed / (idx + 1) * (len(route_pairs) - idx - 1)
+                print(f"📊 进度: {idx+1}/{len(route_pairs)}, 成功: {self.total_routes_completed}, "
+                      f"剩余: {remaining/60:.1f}分钟")
             
-            # 最终统计
-            total_time = time.time() - start_time
-            self._print_final_statistics(total_time, save_path)
+            self._print_final_statistics(time.time() - start_time, save_path)
             
         except KeyboardInterrupt:
-            print("\n\n⚠️  收到中断信号，正在退出...")
-            self._print_final_statistics(time.time() - start_time, save_path)
-        except Exception as e:
-            print(f"\n❌ 错误: {e}")
-            import traceback
-            traceback.print_exc()
+            print("\n⚠️  收到中断信号...")
         finally:
-            # 清理NPC车辆和行人
-            self._cleanup_npc_vehicles()
-            self._cleanup_npc_walkers()
-            
-            # 恢复异步模式
-            if self.world is not None:
+            self._cleanup_npcs()
+            if self.world:
                 try:
                     settings = self.world.get_settings()
-                    if settings.synchronous_mode:
-                        settings.synchronous_mode = False
-                        self.world.apply_settings(settings)
-                        print("✅ 已恢复CARLA异步模式")
+                    settings.synchronous_mode = False
+                    self.world.apply_settings(settings)
                 except:
                     pass
     
     def _print_final_statistics(self, total_time, save_path):
-        """打印最终统计信息"""
+        """打印最终统计"""
         print("\n" + "="*70)
-        print("📊 全自动收集完成 - 最终统计")
+        print("📊 收集完成 - 最终统计")
         print("="*70)
-        print(f"总尝试路线: {self.total_routes_attempted}")
-        print(f"成功完成: {self.total_routes_completed}")
-        print(f"失败路线: {len(self.failed_routes)}")
-        print(f"成功率: {self.total_routes_completed/self.total_routes_attempted*100:.1f}%")
-        print(f"总收集帧数: {self.total_frames_collected}")
-        print(f"总耗时: {total_time/60:.1f}分钟 ({total_time/3600:.2f}小时)")
-        print(f"数据保存路径: {save_path}")
+        print(f"总路线: {self.total_routes_attempted}")
+        print(f"成功: {self.total_routes_completed}")
+        print(f"失败: {len(self.failed_routes)}")
+        print(f"总帧数: {self.total_frames_collected}")
+        print(f"耗时: {total_time/60:.1f}分钟")
+        print("="*70)
         
-        if self.failed_routes:
-            print(f"\n❌ 失败路线列表:")
-            for start, end, reason in self.failed_routes[:10]:  # 只显示前10个
-                print(f"  • {start} → {end}: {reason}")
-            if len(self.failed_routes) > 10:
-                print(f"  ... 还有 {len(self.failed_routes)-10} 条失败路线")
-        
-        print("="*70 + "\n")
-        
-        # 保存统计信息到JSON
+        # 保存统计
         stats = {
-            'total_routes_attempted': self.total_routes_attempted,
-            'total_routes_completed': self.total_routes_completed,
-            'total_frames_collected': self.total_frames_collected,
-            'total_time_seconds': total_time,
-            'failed_routes': [
-                {'start': s, 'end': e, 'reason': r} 
-                for s, e, r in self.failed_routes
-            ],
+            'total_routes': self.total_routes_attempted,
+            'completed': self.total_routes_completed,
+            'frames': self.total_frames_collected,
+            'time_seconds': total_time,
+            'failed': [{'start': s, 'end': e, 'reason': r} for s, e, r in self.failed_routes],
             'timestamp': datetime.now().isoformat()
         }
         
         stats_file = os.path.join(save_path, 'collection_statistics.json')
+        os.makedirs(save_path, exist_ok=True)
         with open(stats_file, 'w', encoding='utf-8') as f:
             json.dump(stats, f, indent=4, ensure_ascii=False)
-        
-        print(f"✅ 统计信息已保存到: {stats_file}\n")
+        print(f"✅ 统计已保存: {stats_file}")
 
 
 def load_config(config_path='auto_collection_config.json'):
-    """
-    加载配置文件
-    
-    参数:
-        config_path (str): 配置文件路径
-        
-    返回:
-        dict: 配置字典
-    """
-    # 默认配置
+    """加载配置文件"""
     default_config = {
-        'carla_settings': {
-            'host': 'localhost',
-            'port': 2000,
-            'town': 'Town01'
-        },
-        'traffic_rules': {
-            'ignore_traffic_lights': True,
-            'ignore_signs': True,
-            'ignore_vehicles_percentage': 80
-        },
-        'world_settings': {
-            'spawn_npc_vehicles': False,
-            'num_npc_vehicles': 0,
-            'spawn_npc_walkers': False,
-            'num_npc_walkers': 0
-        },
-        'weather_settings': {
-            'preset': 'ClearNoon',
-            'custom': {
-                'cloudiness': 0.0,
-                'precipitation': 0.0,
-                'precipitation_deposits': 0.0,
-                'wind_intensity': 0.0,
-                'sun_azimuth_angle': 0.0,
-                'sun_altitude_angle': 75.0,
-                'fog_density': 0.0,
-                'fog_distance': 0.0,
-                'wetness': 0.0
-            }
-        },
-        'route_generation': {
-            'strategy': 'smart',
-            'min_distance': 50.0,
-            'max_distance': 500.0,
-            'target_routes': 200,
-            'overlap_threshold': 0.5
-        },
-        'collection_settings': {
-            'frames_per_route': 1000,
-            'save_path': './auto_collected_data',
-            'auto_save_interval': 200,
-            'simulation_fps': 20,
-            'target_speed_kmh': 10.0
-        }
+        'carla_settings': {'host': 'localhost', 'port': 2000, 'town': 'Town01'},
+        'traffic_rules': {'ignore_traffic_lights': True, 'ignore_signs': True, 'ignore_vehicles_percentage': 80},
+        'world_settings': {'spawn_npc_vehicles': False, 'num_npc_vehicles': 0,
+                          'spawn_npc_walkers': False, 'num_npc_walkers': 0},
+        'weather_settings': {'preset': 'ClearNoon'},
+        'route_generation': {'strategy': 'smart', 'min_distance': 50.0, 'max_distance': 500.0,
+                            'target_routes': 200, 'overlap_threshold': 0.5},
+        'collection_settings': {'frames_per_route': 1000, 'save_path': './auto_collected_data',
+                               'simulation_fps': 20, 'target_speed_kmh': 10.0},
+        'noise_settings': {'enabled': False, 'lateral_noise': True, 'longitudinal_noise': False,
+                          'lateral_frequency': 25, 'lateral_intensity': 10, 'lateral_min_time': 1.0,
+                          'longitudinal_frequency': 15, 'longitudinal_intensity': 10, 'longitudinal_min_time': 2.0}
     }
     
-    # 尝试加载配置文件
-    try:
-        # 获取脚本所在目录
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_file = os.path.join(script_dir, config_path)
-        
-        if os.path.exists(config_file):
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_file = os.path.join(script_dir, config_path)
+    
+    if os.path.exists(config_file):
+        try:
             with open(config_file, 'r', encoding='utf-8') as f:
-                loaded_config = json.load(f)
-                print(f"✅ 已加载配置文件: {config_file}")
-                
-                # 合并配置（加载的配置覆盖默认配置）
-                for section in default_config:
-                    if section in loaded_config:
-                        default_config[section].update(loaded_config[section])
-                
-                return default_config
-        else:
-            print(f"⚠️  配置文件不存在: {config_file}")
-            print(f"⚠️  使用默认配置")
-            return default_config
-            
-    except Exception as e:
-        print(f"⚠️  加载配置文件失败: {e}")
-        print(f"⚠️  使用默认配置")
-        return default_config
-
-
-def run_multi_weather_collection(config, weather_list):
-    """
-    多天气轮换收集
+                loaded = json.load(f)
+            for section in default_config:
+                if section in loaded:
+                    default_config[section].update(loaded[section])
+            print(f"✅ 已加载配置: {config_file}")
+        except Exception as e:
+            print(f"⚠️  加载配置失败: {e}")
     
-    参数:
-        config (dict): 基础配置
-        weather_list (list): 天气预设列表
-    """
-    base_save_path = config['collection_settings']['save_path']
-    total_weathers = len(weather_list)
-    
-    print("\n" + "="*70)
-    print("🌤️  多天气轮换收集模式")
-    print("="*70)
-    print(f"天气列表: {weather_list}")
-    print(f"总天气数: {total_weathers}")
-    print("="*70 + "\n")
-    
-    all_stats = []
-    
-    for weather_idx, weather_preset in enumerate(weather_list):
-        print("\n" + "🌈"*35)
-        print(f"🌤️  天气 {weather_idx+1}/{total_weathers}: {weather_preset}")
-        print("🌈"*35 + "\n")
-        
-        # 更新天气配置
-        config['weather_settings']['preset'] = weather_preset
-        
-        # 为每个天气创建独立的保存目录
-        weather_save_path = os.path.join(base_save_path, weather_preset)
-        config['collection_settings']['save_path'] = weather_save_path
-        
-        # 创建收集器
-        collector = AutoFullTownCollector(
-            host=config['carla_settings']['host'],
-            port=config['carla_settings']['port'],
-            town=config['carla_settings']['town'],
-            ignore_traffic_lights=config['traffic_rules']['ignore_traffic_lights'],
-            ignore_signs=config['traffic_rules']['ignore_signs'],
-            ignore_vehicles_percentage=config['traffic_rules']['ignore_vehicles_percentage'],
-            target_speed=config['collection_settings']['target_speed_kmh'],
-            simulation_fps=config['collection_settings']['simulation_fps'],
-            spawn_npc_vehicles=config['world_settings']['spawn_npc_vehicles'],
-            num_npc_vehicles=config['world_settings']['num_npc_vehicles'],
-            spawn_npc_walkers=config['world_settings']['spawn_npc_walkers'],
-            num_npc_walkers=config['world_settings']['num_npc_walkers'],
-            weather_config=config.get('weather_settings', {})
-        )
-        
-        # 设置参数
-        collector.min_distance = config['route_generation']['min_distance']
-        collector.max_distance = config['route_generation']['max_distance']
-        collector.frames_per_route = config['collection_settings']['frames_per_route']
-        # 智能策略参数
-        collector.target_routes = config['route_generation'].get('target_routes', 200)
-        collector.overlap_threshold = config['route_generation'].get('overlap_threshold', 0.5)
-        
-        # 运行收集
-        collector.run(
-            save_path=weather_save_path,
-            strategy=config['route_generation']['strategy']
-        )
-        
-        # 记录统计
-        all_stats.append({
-            'weather': weather_preset,
-            'routes_completed': collector.total_routes_completed,
-            'frames_collected': collector.total_frames_collected,
-            'save_path': weather_save_path
-        })
-        
-        print(f"\n✅ 天气 {weather_preset} 收集完成！")
-        print(f"   路线: {collector.total_routes_completed}, 帧数: {collector.total_frames_collected}")
-    
-    # 打印总体统计
-    print("\n" + "="*70)
-    print("📊 多天气收集完成 - 总体统计")
-    print("="*70)
-    total_routes = sum(s['routes_completed'] for s in all_stats)
-    total_frames = sum(s['frames_collected'] for s in all_stats)
-    print(f"总天气数: {total_weathers}")
-    print(f"总路线数: {total_routes}")
-    print(f"总帧数: {total_frames}")
-    print("\n各天气统计:")
-    for stat in all_stats:
-        print(f"  • {stat['weather']}: {stat['routes_completed']} 路线, {stat['frames_collected']} 帧")
-    print("="*70 + "\n")
-    
-    # 保存总体统计
-    summary_file = os.path.join(base_save_path, 'multi_weather_summary.json')
-    with open(summary_file, 'w', encoding='utf-8') as f:
-        json.dump({
-            'weather_list': weather_list,
-            'total_weathers': total_weathers,
-            'total_routes': total_routes,
-            'total_frames': total_frames,
-            'per_weather_stats': all_stats,
-            'timestamp': datetime.now().isoformat()
-        }, f, indent=4, ensure_ascii=False)
-    print(f"✅ 总体统计已保存到: {summary_file}")
-
-
-# 预定义的天气组合
-WEATHER_PRESETS = {
-    'all_noon': ['ClearNoon', 'CloudyNoon', 'WetNoon', 'SoftRainNoon', 'HardRainNoon'],
-    'all_sunset': ['ClearSunset', 'CloudySunset', 'WetSunset', 'SoftRainSunset', 'HardRainSunset'],
-    'all_night': ['ClearNight', 'CloudyNight', 'WetNight', 'SoftRainNight', 'HardRainNight'],
-    'clear_all': ['ClearNoon', 'ClearSunset', 'ClearNight'],
-    'rain_all': ['SoftRainNoon', 'MidRainyNoon', 'HardRainNoon', 'SoftRainSunset', 'SoftRainNight'],
-    'basic': ['ClearNoon', 'CloudyNoon', 'ClearSunset', 'ClearNight'],
-    'full': [
-        'ClearNoon', 'CloudyNoon', 'WetNoon', 'SoftRainNoon', 'HardRainNoon',
-        'ClearSunset', 'CloudySunset', 'SoftRainSunset',
-        'ClearNight', 'CloudyNight', 'SoftRainNight'
-    ]
-}
+    return default_config
 
 
 def main():
     """主函数"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='全自动Town01数据收集器')
-    parser.add_argument('--config', default='auto_collection_config.json', 
-                       help='配置文件路径（默认：auto_collection_config.json）')
-    parser.add_argument('--host', help='CARLA服务器地址（覆盖配置文件）')
-    parser.add_argument('--port', type=int, help='CARLA服务器端口（覆盖配置文件）')
-    parser.add_argument('--town', help='地图名称（覆盖配置文件）')
-    parser.add_argument('--save-path', help='数据保存路径（覆盖配置文件）')
-    parser.add_argument('--strategy', choices=['smart', 'exhaustive'],
-                       help='路线生成策略（覆盖配置文件）')
-    parser.add_argument('--min-distance', type=float, help='最小路线距离（覆盖配置文件）')
-    parser.add_argument('--max-distance', type=float, help='最大路线距离（覆盖配置文件）')
-    parser.add_argument('--frames-per-route', type=int, help='每条路线收集的帧数（覆盖配置文件）')
-    parser.add_argument('--target-routes', type=int, help='智能策略目标路线数量（覆盖配置文件）')
-    parser.add_argument('--overlap-threshold', type=float, help='路径重叠阈值0-1（覆盖配置文件）')
-    parser.add_argument('--target-speed', type=float, help='目标速度 km/h（覆盖配置文件）')
-    parser.add_argument('--fps', type=int, help='模拟帧率（覆盖配置文件）')
-    parser.add_argument('--spawn-npc', action='store_true', help='生成NPC车辆（覆盖配置文件）')
-    parser.add_argument('--num-npc', type=int, help='NPC车辆数量（覆盖配置文件）')
-    parser.add_argument('--spawn-walkers', action='store_true', help='生成NPC行人（覆盖配置文件）')
-    parser.add_argument('--num-walkers', type=int, help='NPC行人数量（覆盖配置文件）')
-    parser.add_argument('--weather', type=str, help='天气预设名称（覆盖配置文件）')
-    # 新增：多天气轮换参数
-    parser.add_argument('--multi-weather', type=str, 
-                       choices=['all_noon', 'all_sunset', 'all_night', 'clear_all', 'rain_all', 'basic', 'full'],
-                       help='多天气轮换模式：all_noon/all_sunset/all_night/clear_all/rain_all/basic/full')
-    parser.add_argument('--weather-list', type=str, nargs='+',
-                       help='自定义天气列表，如：ClearNoon CloudyNoon WetNoon')
+    parser = argparse.ArgumentParser(description='全自动数据收集器')
+    parser.add_argument('--config', default='auto_collection_config.json')
+    parser.add_argument('--host', help='CARLA服务器地址')
+    parser.add_argument('--port', type=int, help='CARLA服务器端口')
+    parser.add_argument('--save-path', help='保存路径')
+    parser.add_argument('--strategy', choices=['smart', 'exhaustive'])
+    parser.add_argument('--target-routes', type=int)
+    parser.add_argument('--frames-per-route', type=int)
     
     args = parser.parse_args()
-    
-    # 加载配置文件
     config = load_config(args.config)
     
-    # 命令行参数覆盖配置文件
+    # 命令行覆盖
     if args.host:
         config['carla_settings']['host'] = args.host
     if args.port:
         config['carla_settings']['port'] = args.port
-    if args.town:
-        config['carla_settings']['town'] = args.town
     if args.save_path:
         config['collection_settings']['save_path'] = args.save_path
     if args.strategy:
         config['route_generation']['strategy'] = args.strategy
-    if args.min_distance:
-        config['route_generation']['min_distance'] = args.min_distance
-    if args.max_distance:
-        config['route_generation']['max_distance'] = args.max_distance
-    if args.frames_per_route:
-        config['collection_settings']['frames_per_route'] = args.frames_per_route
     if args.target_routes:
         config['route_generation']['target_routes'] = args.target_routes
-    if args.overlap_threshold:
-        config['route_generation']['overlap_threshold'] = args.overlap_threshold
-    if args.target_speed:
-        config['collection_settings']['target_speed_kmh'] = args.target_speed
-    if args.fps:
-        config['collection_settings']['simulation_fps'] = args.fps
-    if args.spawn_npc:
-        config['world_settings']['spawn_npc_vehicles'] = True
-    if args.num_npc:
-        config['world_settings']['num_npc_vehicles'] = args.num_npc
-    if args.spawn_walkers:
-        config['world_settings']['spawn_npc_walkers'] = True
-    if args.num_walkers:
-        config['world_settings']['num_npc_walkers'] = args.num_walkers
-    if args.weather:
-        config['weather_settings']['preset'] = args.weather
+    if args.frames_per_route:
+        config['collection_settings']['frames_per_route'] = args.frames_per_route
     
-    # 处理多天气轮换模式
-    weather_list = None
-    if args.multi_weather:
-        weather_list = WEATHER_PRESETS.get(args.multi_weather, [])
-        print(f"✅ 使用预定义天气组合: {args.multi_weather}")
-    elif args.weather_list:
-        weather_list = args.weather_list
-        print(f"✅ 使用自定义天气列表: {weather_list}")
-    
-    # 验证帧数（最少200帧）
-    frames_per_route = config['collection_settings']['frames_per_route']
-    if frames_per_route < 200:
-        print(f"⚠️  警告：每条路线帧数 ({frames_per_route}) 小于最小值 200")
-        print(f"✅ 自动调整为 200 帧\n")
-        config['collection_settings']['frames_per_route'] = 200
-    
-    # 显示最终配置
-    print("\n" + "="*70)
-    print("📋 最终配置")
-    print("="*70)
-    print(f"CARLA服务器: {config['carla_settings']['host']}:{config['carla_settings']['port']}")
-    print(f"地图: {config['carla_settings']['town']}")
-    print(f"目标速度: {config['collection_settings']['target_speed_kmh']:.1f} km/h")
-    print(f"模拟帧率: {config['collection_settings']['simulation_fps']} FPS")
-    print(f"生成NPC车辆: {'是' if config['world_settings']['spawn_npc_vehicles'] else '否'}")
-    if config['world_settings']['spawn_npc_vehicles']:
-        print(f"NPC车辆数量: {config['world_settings']['num_npc_vehicles']}")
-    print(f"生成NPC行人: {'是' if config['world_settings']['spawn_npc_walkers'] else '否'}")
-    if config['world_settings']['spawn_npc_walkers']:
-        print(f"NPC行人数量: {config['world_settings']['num_npc_walkers']}")
-    print(f"天气: {config['weather_settings'].get('preset', '自定义')}")
-    print(f"路线策略: {config['route_generation']['strategy']}")
-    if config['route_generation']['strategy'] == 'smart':
-        print(f"  • 目标路线数: {config['route_generation'].get('target_routes', 200)}")
-        print(f"  • 重叠阈值: {config['route_generation'].get('overlap_threshold', 0.5)}")
-    print(f"保存路径: {config['collection_settings']['save_path']}")
-    print("="*70 + "\n")
-    
-    # 创建收集器
     collector = AutoFullTownCollector(
         host=config['carla_settings']['host'],
         port=config['carla_settings']['port'],
@@ -1894,25 +869,37 @@ def main():
         weather_config=config.get('weather_settings', {})
     )
     
-    # 根据是否有多天气列表决定运行模式
-    if weather_list and len(weather_list) > 0:
-        # 多天气轮换模式
-        run_multi_weather_collection(config, weather_list)
-    else:
-        # 单天气模式
-        # 设置参数
-        collector.min_distance = config['route_generation']['min_distance']
-        collector.max_distance = config['route_generation']['max_distance']
-        collector.frames_per_route = config['collection_settings']['frames_per_route']
-        # 智能策略参数
-        collector.target_routes = config['route_generation'].get('target_routes', 200)
-        collector.overlap_threshold = config['route_generation'].get('overlap_threshold', 0.5)
-        
-        # 运行收集
-        collector.run(
-            save_path=config['collection_settings']['save_path'], 
-            strategy=config['route_generation']['strategy']
-        )
+    collector.min_distance = config['route_generation']['min_distance']
+    collector.max_distance = config['route_generation']['max_distance']
+    collector.frames_per_route = config['collection_settings']['frames_per_route']
+    collector.target_routes = config['route_generation']['target_routes']
+    collector.overlap_threshold = config['route_generation']['overlap_threshold']
+    
+    # 噪声配置
+    noise_config = config.get('noise_settings', {})
+    collector.noise_enabled = noise_config.get('enabled', False)
+    collector.lateral_noise_enabled = noise_config.get('lateral_noise', True)
+    collector.longitudinal_noise_enabled = noise_config.get('longitudinal_noise', False)
+    
+    # 噪声参数
+    collector.lateral_frequency = noise_config.get('lateral_frequency', 25)
+    collector.lateral_intensity = noise_config.get('lateral_intensity', 4)
+    collector.lateral_min_time = noise_config.get('lateral_min_time', 0.5)
+    collector.longitudinal_frequency = noise_config.get('longitudinal_frequency', 15)
+    collector.longitudinal_intensity = noise_config.get('longitudinal_intensity', 10)
+    collector.longitudinal_min_time = noise_config.get('longitudinal_min_time', 2.0)
+    
+    if collector.noise_enabled:
+        print(f"\n🎲 噪声注入已启用:")
+        print(f"  • 横向噪声: {'✅' if collector.lateral_noise_enabled else '❌'} "
+              f"(freq={collector.lateral_frequency}, intensity={collector.lateral_intensity})")
+        print(f"  • 纵向噪声: {'✅' if collector.longitudinal_noise_enabled else '❌'} "
+              f"(freq={collector.longitudinal_frequency}, intensity={collector.longitudinal_intensity})")
+    
+    collector.run(
+        save_path=config['collection_settings']['save_path'],
+        strategy=config['route_generation']['strategy']
+    )
 
 
 if __name__ == '__main__':

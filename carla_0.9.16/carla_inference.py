@@ -85,11 +85,13 @@ class CarlaInference:
         
         # 功能模块
         self.model_loader = ModelLoader(model_path, self.device)
+        # 图像处理器（与数据收集保持一致的裁剪参数）
+        # 裁剪比例：top=115/600=0.192, bottom=510/600=0.85
         self.image_processor = ImageProcessor(
             self.device,
             enable_crop=enable_image_crop,
-            crop_top=115,
-            crop_bottom=510
+            crop_ratio_top=0.192,
+            crop_ratio_bottom=0.85
         )
         self.vehicle_controller = VehicleController()
         self.model_predictor = None  # 在加载模型后初始化
@@ -416,7 +418,7 @@ def main():
     parser = argparse.ArgumentParser(description='Carla自动驾驶模型实时推理（模块化版本）')
     
     # 模型参数
-    parser.add_argument('--model-path', type=str, default='./model/ddp_6gpu_2_best.pth',
+    parser.add_argument('--model-path', type=str, default='./model/ddp_6gpu_4_best.pth',
                         help='训练好的模型权重路径')
     parser.add_argument('--net-structure', type=int, default=2,
                         help='网络结构类型 (1|2|3)')
@@ -434,9 +436,9 @@ def main():
                         help='车辆类型')
     
     # 路线规划参数
-    parser.add_argument('--spawn-index', type=int, default=1,
+    parser.add_argument('--spawn-index', type=int, default=40,
                         help='起点索引')
-    parser.add_argument('--dest-index', type=int, default=193,
+    parser.add_argument('--dest-index', type=int, default=147,
                         help='终点索引')
     parser.add_argument('--list-spawns', action='store_true',
                         help='列出所有生成点位置后退出')

@@ -65,7 +65,7 @@
         "_comment": "路线生成策略配置",
         "strategy": "smart",
         "_comment_strategy": "路线生成策略：smart=智能选择（命令平衡+路径去重，推荐），exhaustive=穷举所有组合",
-        "min_distance": 100.0,
+        "min_distance": 150.0,
         "_comment_min_distance": "最小路线距离（米，使用实际路径距离），推荐100m以上确保有足够数据",
         "max_distance": 400.0,
         "_comment_max_distance": "最大路线距离（米，使用实际路径距离），推荐400m避免单条路线过长",
@@ -73,7 +73,7 @@
         "_comment_target_routes": "目标路线数量（smart和exhaustive模式都有效），0=不限制，推荐100-600",
         "overlap_threshold": 0.8,
         "_comment_overlap_threshold": "路径重叠阈值（0-1），超过此值的路线会被去重，推荐0.3-0.5，越低去重越严格",
-        "turn_priority_ratio": 0.5,
+        "turn_priority_ratio": 0.9,
         "_comment_turn_priority_ratio": "转弯路线优先配额（0-1），70%的路线配额优先给包含转弯的路线",
         "_description_v2": "v2.0改进：1.使用实际路径距离筛选 2.基于路径重叠度去重 3.exhaustive模式支持数量限制"
     },
@@ -82,7 +82,7 @@
         "_comment": "数据收集参数配置",
         "frames_per_route": 10000,
         "_comment_frames_per_route": "每条路线收集的最大帧数，实际可能因到达终点而提前结束",
-        "save_path": "E://carla_data",
+        "save_path": "E://carla_data2",
         "_comment_save_path": "数据保存路径，相对路径或绝对路径均可",
         "auto_save_interval": 200,
         "_comment_auto_save_interval": "自动保存间隔（帧数），每收集N帧自动保存一次",
@@ -109,6 +109,28 @@
             "basic": "基础组合（4种）：晴朗正午、多云正午、晴朗日落、晴朗夜晚",
             "full": "完整组合（11种）：覆盖主要天气场景"
         }
+    },
+    
+    "noise_settings": {
+        "_comment": "噪声注入配置（DAgger风格模仿学习）",
+        "enabled": true,
+        "_comment_enabled": "是否启用噪声注入（true=启用，车辆会产生偏离，标签记录专家纠正动作）",
+        "lateral_noise": true,
+        "_comment_lateral_noise": "是否启用横向噪声（转向噪声，模拟方向盘抖动）",
+        "longitudinal_noise": true,
+        "_comment_longitudinal_noise": "是否启用纵向噪声（油门/刹车噪声，模拟速度扰动）",
+        "lateral_frequency": 25,
+        "_comment_lateral_frequency": "横向噪声频率（每分钟触发次数），推荐15-40，越高触发越频繁",
+        "lateral_intensity": 15,
+        "_comment_lateral_intensity": "横向噪声强度，推荐5-25，越大偏离越明显。intensity=15,speed=20时转向偏移约±0.15",
+        "lateral_min_time": 1.0,
+        "_comment_lateral_min_time": "横向噪声最小持续时间（秒），推荐0.5-2.0",
+        "longitudinal_frequency": 15,
+        "_comment_longitudinal_frequency": "纵向噪声频率（每分钟触发次数），推荐10-20",
+        "longitudinal_intensity": 15,
+        "_comment_longitudinal_intensity": "纵向噪声强度，推荐5-25，越大速度变化越明显",
+        "longitudinal_min_time": 2.0,
+        "_comment_longitudinal_min_time": "纵向噪声最小持续时间（秒）"
     },
     
     "advanced_settings": {

@@ -31,7 +31,7 @@ from command_based_data_collection import CommandBasedDataCollector
 # 尝试导入agents模块（用于路径规划）
 try:
     from agents.navigation.global_route_planner import GlobalRoutePlanner
-    from agents.navigation.local_planner_info import LocalPlanner, RoadOption
+    from agents.navigation.local_planner import RoadOption
     AGENTS_AVAILABLE = True
 except ImportError as e:
     AGENTS_AVAILABLE = False
@@ -43,7 +43,10 @@ class InteractiveDataCollector:
     
     def __init__(self, host='localhost', port=2000, town='Town01',
                  ignore_traffic_lights=True, ignore_signs=True,
-                 ignore_vehicles_percentage=80):
+                 ignore_vehicles_percentage=80, target_speed=10.0, simulation_fps=20,
+                 noise_enabled=False, lateral_noise=True, longitudinal_noise=False,
+                 lateral_frequency=25, lateral_intensity=4, lateral_min_time=0.5,
+                 longitudinal_frequency=15, longitudinal_intensity=10, longitudinal_min_time=2.0):
         """
         初始化交互式收集器
         
@@ -54,6 +57,17 @@ class InteractiveDataCollector:
             ignore_traffic_lights (bool): 是否忽略红绿灯
             ignore_signs (bool): 是否忽略停车标志
             ignore_vehicles_percentage (int): 忽略其他车辆的百分比
+            target_speed (float): 目标速度 (km/h)
+            simulation_fps (int): 模拟帧率
+            noise_enabled (bool): 是否启用噪声注入
+            lateral_noise (bool): 是否启用横向噪声（转向）
+            longitudinal_noise (bool): 是否启用纵向噪声（油门/刹车）
+            lateral_frequency (int): 横向噪声频率（每分钟触发次数）
+            lateral_intensity (float): 横向噪声强度
+            lateral_min_time (float): 横向噪声最小持续时间（秒）
+            longitudinal_frequency (int): 纵向噪声频率
+            longitudinal_intensity (float): 纵向噪声强度
+            longitudinal_min_time (float): 纵向噪声最小持续时间（秒）
         """
         self.host = host
         self.port = port
@@ -63,6 +77,21 @@ class InteractiveDataCollector:
         self.ignore_traffic_lights = ignore_traffic_lights
         self.ignore_signs = ignore_signs
         self.ignore_vehicles_percentage = ignore_vehicles_percentage
+        
+        # 速度和帧率配置
+        self.target_speed = target_speed
+        self.simulation_fps = simulation_fps
+        
+        # ========== 噪声配置 ==========
+        self.noise_enabled = noise_enabled
+        self.lateral_noise_enabled = lateral_noise
+        self.longitudinal_noise_enabled = longitudinal_noise
+        self.lateral_frequency = lateral_frequency
+        self.lateral_intensity = lateral_intensity
+        self.lateral_min_time = lateral_min_time
+        self.longitudinal_frequency = longitudinal_frequency
+        self.longitudinal_intensity = longitudinal_intensity
+        self.longitudinal_min_time = longitudinal_min_time
         
         # CARLA对象
         self.client = None
@@ -515,11 +544,7 @@ class InteractiveDataCollector:
         # 交互式模式下强制启用可视化
         visualize = True
         
-        # 获取LocalPlanner的target_speed配置
-        target_speed = 10.0  # 使用下面opt_dict中的速度
-        simulation_fps = 20  # 默认帧率
-        
-        # 创建基于命令的数据收集器（传递target_speed和simulation_fps）
+        # 创建基于命令的数据收集器（传递所有配置参数，包括噪声参数）
         self.collector = CommandBasedDataCollector(
             host=self.host,
             port=self.port,
@@ -527,8 +552,17 @@ class InteractiveDataCollector:
             ignore_traffic_lights=self.ignore_traffic_lights,
             ignore_signs=self.ignore_signs,
             ignore_vehicles_percentage=self.ignore_vehicles_percentage,
-            target_speed=target_speed,  # ⭐ 传递速度参数
-            simulation_fps=simulation_fps  # ⭐ 传递帧率参数
+            target_speed=self.target_speed,
+            simulation_fps=self.simulation_fps,
+            noise_enabled=self.noise_enabled,
+            lateral_noise=self.lateral_noise_enabled,
+            longitudinal_noise=self.longitudinal_noise_enabled,
+            lateral_frequency=self.lateral_frequency,
+            lateral_intensity=self.lateral_intensity,
+            lateral_min_time=self.lateral_min_time,
+            longitudinal_frequency=self.longitudinal_frequency,
+            longitudinal_intensity=self.longitudinal_intensity,
+            longitudinal_min_time=self.longitudinal_min_time
         )
         
         # 复用已有的连接
@@ -540,7 +574,7 @@ class InteractiveDataCollector:
         settings = self.world.get_settings()
         if not settings.synchronous_mode:
             settings.synchronous_mode = True
-            settings.fixed_delta_seconds = 0.05  # 20FPS
+            settings.fixed_delta_seconds = 1.0 / self.simulation_fps
             self.world.apply_settings(settings)
         
         print(f"配置:")
@@ -548,11 +582,20 @@ class InteractiveDataCollector:
         print(f"  终点索引: {end_idx}")
         print(f"  最大帧数: {num_frames}")
         print(f"  保存路径: {save_path}")
+        print(f"  目标速度: {self.target_speed} km/h")
+        print(f"  模拟帧率: {self.simulation_fps} FPS")
         print(f"  实时可视化: ✅ 已启用")
         print(f"  交通规则:")
         print(f"    • 忽略红绿灯: {'✅ 是' if self.ignore_traffic_lights else '❌ 否'}")
         print(f"    • 忽略停车标志: {'✅ 是' if self.ignore_signs else '❌ 否'}")
         print(f"    • 忽略其他车辆: {self.ignore_vehicles_percentage}%")
+        print(f"  噪声配置:")
+        print(f"    • 噪声注入: {'✅ 启用' if self.noise_enabled else '❌ 禁用'}")
+        if self.noise_enabled:
+            print(f"    • 横向噪声: {'✅' if self.lateral_noise_enabled else '❌'} "
+                  f"(freq={self.lateral_frequency}, intensity={self.lateral_intensity})")
+            print(f"    • 纵向噪声: {'✅' if self.longitudinal_noise_enabled else '❌'} "
+                  f"(freq={self.longitudinal_frequency}, intensity={self.longitudinal_intensity})")
         print(f"  收集模式: 📋 简化的循环式收集")
         print(f"    • 询问是否收集当前命令段")
         print(f"    • 选择'保存' → 收集200帧 → 自动保存")
@@ -565,37 +608,16 @@ class InteractiveDataCollector:
                 print("❌ 无法生成车辆！")
                 return False
             
-            # 初始化局部规划器（使用 agents 模块）
-            from agents.navigation.local_planner_info import LocalPlanner, RoadOption
-            
-            # 创建局部规划器配置
-            opt_dict = {
-                'target_speed': 10.0,      # 目标速度 (km/h)
-                'sampling_radius': 2.0,     # 采样半径 (米)
-                'offset': 0.0               # 车道偏移 (米)
-            }
-            
-            self.collector.local_planner = LocalPlanner(
-                vehicle=self.collector.vehicle,
-                opt_dict=opt_dict,
-                map_inst=self.world.get_map()
-            )
-            
-            # 设置全局路径（如果已规划）
-            if hasattr(self, '_current_route') and self._current_route:
-                self.collector.local_planner.set_global_plan(
-                    self._current_route,
-                    stop_waypoint_creation=True,
-                    clean_queue=True
-                )
-                print("✅ 全局路径已设置到局部规划器")
-            
             # 设置摄像头
+            # 注意：spawn_vehicle() 已经创建了 BasicAgent，它内部有自己的 LocalPlanner
+            # 不需要再创建额外的 local_planner
             self.collector.setup_camera()
             
             # 等待传感器准备
             print("\n等待传感器准备...")
             time.sleep(1.0)
+            
+            # 噪声已在构造函数中配置，无需再次调用 configure_noise()
             
             # 开始交互式收集数据
             print("\n🎬 准备开始交互式数据收集...")
@@ -816,6 +838,25 @@ def main():
                        help='遵守停车标志（默认忽略）')
     parser.add_argument('--ignore-vehicles', type=int, default=80,
                        help='忽略其他车辆的百分比 0-100（默认：80）')
+    parser.add_argument('--target-speed', type=float, default=10.0,
+                       help='目标速度 km/h（默认：10.0）')
+    parser.add_argument('--fps', type=int, default=20,
+                       help='模拟帧率（默认：20）')
+    # 噪声相关参数
+    parser.add_argument('--noise', action='store_true',
+                       help='启用噪声注入（DAgger风格）')
+    parser.add_argument('--no-lateral-noise', action='store_true',
+                       help='禁用横向噪声（默认启用）')
+    parser.add_argument('--longitudinal-noise', action='store_true',
+                       help='启用纵向噪声（默认禁用）')
+    parser.add_argument('--lateral-frequency', type=int, default=25,
+                       help='横向噪声频率（每分钟触发次数，默认：25）')
+    parser.add_argument('--lateral-intensity', type=float, default=4,
+                       help='横向噪声强度（默认：4）')
+    parser.add_argument('--longitudinal-frequency', type=int, default=15,
+                       help='纵向噪声频率（每分钟触发次数，默认：15）')
+    parser.add_argument('--longitudinal-intensity', type=float, default=10,
+                       help='纵向噪声强度（默认：10）')
     
     args = parser.parse_args()
     
@@ -826,7 +867,17 @@ def main():
         town=args.town,
         ignore_traffic_lights=not args.respect_traffic_lights,
         ignore_signs=not args.respect_signs,
-        ignore_vehicles_percentage=args.ignore_vehicles
+        ignore_vehicles_percentage=args.ignore_vehicles,
+        target_speed=args.target_speed,
+        simulation_fps=args.fps,
+        # 噪声配置
+        noise_enabled=args.noise,
+        lateral_noise=not args.no_lateral_noise,
+        longitudinal_noise=args.longitudinal_noise,
+        lateral_frequency=args.lateral_frequency,
+        lateral_intensity=args.lateral_intensity,
+        longitudinal_frequency=args.longitudinal_frequency,
+        longitudinal_intensity=args.longitudinal_intensity
     )
     
     # 运行
