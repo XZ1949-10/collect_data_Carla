@@ -1038,11 +1038,12 @@ def run_single_weather_collection(config, weather_name, base_save_path):
     collector.noise_enabled = noise_config.get('enabled', False)
     collector.lateral_noise_enabled = noise_config.get('lateral_noise', True)
     collector.longitudinal_noise_enabled = noise_config.get('longitudinal_noise', False)
-    collector.lateral_frequency = noise_config.get('lateral_frequency', 25)
-    collector.lateral_intensity = noise_config.get('lateral_intensity', 4)
-    collector.lateral_min_time = noise_config.get('lateral_min_time', 0.5)
+    # 噪声参数（默认值与 auto_collection_config.json 保持一致）
+    collector.lateral_frequency = noise_config.get('lateral_frequency', 15)
+    collector.lateral_intensity = noise_config.get('lateral_intensity', 15)
+    collector.lateral_min_time = noise_config.get('lateral_min_time', 2.0)
     collector.longitudinal_frequency = noise_config.get('longitudinal_frequency', 15)
-    collector.longitudinal_intensity = noise_config.get('longitudinal_intensity', 10)
+    collector.longitudinal_intensity = noise_config.get('longitudinal_intensity', 15)
     collector.longitudinal_min_time = noise_config.get('longitudinal_min_time', 2.0)
     
     collector.run(
@@ -1189,12 +1190,12 @@ def main():
         collector.lateral_noise_enabled = noise_config.get('lateral_noise', True)
         collector.longitudinal_noise_enabled = noise_config.get('longitudinal_noise', False)
         
-        # 噪声参数
-        collector.lateral_frequency = noise_config.get('lateral_frequency', 25)
-        collector.lateral_intensity = noise_config.get('lateral_intensity', 4)
-        collector.lateral_min_time = noise_config.get('lateral_min_time', 0.5)
+        # 噪声参数（默认值与 auto_collection_config.json 保持一致）
+        collector.lateral_frequency = noise_config.get('lateral_frequency', 15)
+        collector.lateral_intensity = noise_config.get('lateral_intensity', 15)
+        collector.lateral_min_time = noise_config.get('lateral_min_time', 2.0)
         collector.longitudinal_frequency = noise_config.get('longitudinal_frequency', 15)
-        collector.longitudinal_intensity = noise_config.get('longitudinal_intensity', 10)
+        collector.longitudinal_intensity = noise_config.get('longitudinal_intensity', 15)
         collector.longitudinal_min_time = noise_config.get('longitudinal_min_time', 2.0)
         
         if collector.noise_enabled:

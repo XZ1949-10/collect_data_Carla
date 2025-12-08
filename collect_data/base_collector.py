@@ -312,11 +312,15 @@ class BaseDataCollector:
         """配置BasicAgent"""
         print(f"正在配置 BasicAgent...")
         
+        # ignore_vehicles_percentage: 0=不忽略, 100=完全忽略
+        # 转换为布尔值：>0 表示启用忽略（具体百分比由Traffic Manager控制）
+        ignore_vehicles = self.ignore_vehicles_percentage > 0
+        
         opt_dict = {
             'target_speed': self.target_speed,
             'ignore_traffic_lights': self.ignore_traffic_lights,
             'ignore_stop_signs': self.ignore_signs,
-            'ignore_vehicles': (self.ignore_vehicles_percentage > 50),
+            'ignore_vehicles': ignore_vehicles,
             'sampling_resolution': 1.0,
             'base_tlight_threshold': 5.0,
             'lateral_control_dict': {
@@ -355,11 +359,11 @@ class BaseDataCollector:
             self.traffic_manager.ignore_lights_percentage(self.vehicle, 100)
         if self.ignore_signs:
             self.traffic_manager.ignore_signs_percentage(self.vehicle, 100)
-        if self.ignore_vehicles_percentage > 0:
-            self.traffic_manager.ignore_vehicles_percentage(self.vehicle, self.ignore_vehicles_percentage)
+        # 使用配置的百分比值（0-100）
+        self.traffic_manager.ignore_vehicles_percentage(self.vehicle, self.ignore_vehicles_percentage)
         
         self.traffic_manager.auto_lane_change(self.vehicle, False)
-        print(f"  ✅ Traffic Manager 已配置")
+        print(f"  ✅ Traffic Manager 已配置 (忽略车辆: {self.ignore_vehicles_percentage}%)")
     
     def setup_camera(self):
         """设置摄像头"""
