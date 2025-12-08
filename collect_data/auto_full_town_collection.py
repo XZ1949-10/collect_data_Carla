@@ -64,6 +64,14 @@ class AutoFullTownCollector(BaseDataCollector):
         self.frames_per_route = 1000
         self.target_routes = 200
         self.overlap_threshold = 0.5
+        self.turn_priority_ratio = 3.0  # 转弯路线优先权重（用于命令平衡选择）
+        self.auto_save_interval = 200   # 自动保存间隔（帧数）
+        
+        # 高级设置
+        self.enable_route_validation = True   # 是否启用路线验证
+        self.retry_failed_routes = False      # 是否重试失败的路线
+        self.max_retries = 3                  # 最大重试次数
+        self.pause_between_routes = 2         # 路线之间的暂停时间（秒）
         
         # 统计
         self.total_routes_attempted = 0
@@ -97,7 +105,7 @@ class AutoFullTownCollector(BaseDataCollector):
         print(f"正在连接到CARLA服务器 {self.host}:{self.port}...")
         
         self.client = carla.Client(self.host, self.port)
-        self.client.set_timeout(10.0)
+        self.client.set_timeout(60.0)  # 增加超时时间到60秒，避免路线切换时超时
         
         self.world = self.client.get_world()
         current_map_name = self.world.get_map().name.split('/')[-1]
@@ -177,7 +185,25 @@ class AutoFullTownCollector(BaseDataCollector):
         
         if preset and preset in weather_presets:
             self.world.set_weather(weather_presets[preset])
-            print(f"  天气: {preset}")
+            print(f"  🌤️ 天气: {preset}")
+        elif preset is None or preset == '':
+            # 使用自定义天气参数
+            custom = self.weather_config.get('custom', {})
+            if custom:
+                weather = carla.WeatherParameters(
+                    cloudiness=custom.get('cloudiness', 0.0),
+                    precipitation=custom.get('precipitation', 0.0),
+                    precipitation_deposits=custom.get('precipitation_deposits', 0.0),
+                    wind_intensity=custom.get('wind_intensity', 0.0),
+                    sun_azimuth_angle=custom.get('sun_azimuth_angle', 0.0),
+                    sun_altitude_angle=custom.get('sun_altitude_angle', 75.0),
+                    fog_density=custom.get('fog_density', 0.0),
+                    fog_distance=custom.get('fog_distance', 0.0),
+                    wetness=custom.get('wetness', 0.0)
+                )
+                self.world.set_weather(weather)
+                print(f"  🌤️ 天气: 自定义参数")
+                print(f"     云量: {custom.get('cloudiness', 0.0)}, 降水: {custom.get('precipitation', 0.0)}")
         elif preset:
             print(f"  ⚠️ 未知天气预设: {preset}，使用默认天气")
     
@@ -385,8 +411,10 @@ class AutoFullTownCollector(BaseDataCollector):
         total = sum(total_commands.values()) or 1
         scarcity = {cmd: 1.0 - (count / total) for cmd, count in total_commands.items()}
         
+        # 使用 turn_priority_ratio 作为转弯命令的优先权重
+        turn_weight = self.turn_priority_ratio
         for c in candidates:
-            c['priority'] = sum(count * scarcity[cmd] * (3 if cmd in [3, 4] else 1)
+            c['priority'] = sum(count * scarcity[cmd] * (turn_weight if cmd in [3, 4] else 1)
                                for cmd, count in c['commands'].items())
         
         candidates.sort(key=lambda x: x['priority'], reverse=True)
@@ -531,6 +559,10 @@ class AutoFullTownCollector(BaseDataCollector):
         print(f"{'='*70}")
         
         try:
+            # 注意：不在这里调用tick()，因为上一条路线的actor已销毁
+            # tick()必须在有actor（车辆+传感器）监听时才能正常工作
+            # 同步模式的tick会在下面创建车辆和传感器后执行
+            
             # 创建内部收集器
             from command_based_data_collection import CommandBasedDataCollector
             self._inner_collector = CommandBasedDataCollector(
@@ -559,7 +591,13 @@ class AutoFullTownCollector(BaseDataCollector):
             
             self._inner_collector.setup_camera()
             self._inner_collector.setup_collision_sensor()  # 设置碰撞传感器
-            time.sleep(1.0)
+            
+            # 关键：等待传感器初始化，并执行几次tick让CARLA同步
+            # 必须在传感器设置完成后才能调用tick，否则会超时
+            time.sleep(0.5)
+            for _ in range(10):
+                self.world.tick()
+            time.sleep(0.5)
             
             # 配置噪声（从自身配置传递到内部收集器，包括参数）
             self._inner_collector.configure_noise(
@@ -585,27 +623,67 @@ class AutoFullTownCollector(BaseDataCollector):
         finally:
             self._cleanup_inner_collector()
     
+    def _reset_sync_mode(self):
+        """重置同步模式（用于错误恢复）"""
+        try:
+            # 先关闭同步模式
+            settings = self.world.get_settings()
+            settings.synchronous_mode = False
+            self.world.apply_settings(settings)
+            time.sleep(2.0)  # 等待CARLA完全切换到异步模式
+            
+            # 重新开启同步模式
+            settings.synchronous_mode = True
+            settings.fixed_delta_seconds = 1.0 / self.simulation_fps
+            self.world.apply_settings(settings)
+            time.sleep(0.5)
+            
+            # 注意：不在这里调用tick()，因为可能没有actor监听
+            # tick()会在新车辆和传感器创建后自动执行
+            
+            print("✅ 同步模式已重置")
+        except Exception as e:
+            print(f"⚠️  重置同步模式失败: {e}")
+    
     def _cleanup_inner_collector(self):
         """清理内部收集器"""
         if self._inner_collector:
+            # 先清理agent引用
+            try:
+                self._inner_collector.agent = None
+            except:
+                pass
+            
+            # 停止并销毁碰撞传感器
             try:
                 if self._inner_collector.collision_sensor:
                     self._inner_collector.collision_sensor.stop()
                     self._inner_collector.collision_sensor.destroy()
+                    self._inner_collector.collision_sensor = None
             except:
                 pass
+            
+            # 停止并销毁摄像头
             try:
                 if self._inner_collector.camera:
                     self._inner_collector.camera.stop()
                     self._inner_collector.camera.destroy()
+                    self._inner_collector.camera = None
             except:
                 pass
+            
+            # 销毁车辆
             try:
                 if self._inner_collector.vehicle:
                     self._inner_collector.vehicle.destroy()
+                    self._inner_collector.vehicle = None
             except:
                 pass
+            
             self._inner_collector = None
+            
+            # 等待CARLA处理销毁请求（不要在这里调用tick，因为没有actor监听会导致问题）
+            time.sleep(1.0)
     
     def _auto_collect(self, save_path):
         """自动收集数据"""
@@ -669,8 +747,8 @@ class AutoFullTownCollector(BaseDataCollector):
                         collected_frames, self.frames_per_route, is_collecting=True
                     )
                 
-                # 每200帧保存，使用segment开始时的command
-                if segment_count >= 200:
+                # 每 auto_save_interval 帧保存，使用segment开始时的command
+                if segment_count >= self.auto_save_interval:
                     # 保存前再次检查碰撞状态
                     if not self._inner_collector.collision_detected:
                         self._save_segment_auto(segment_data, save_path, segment_start_cmd)
@@ -699,8 +777,18 @@ class AutoFullTownCollector(BaseDataCollector):
             self.total_frames_collected += collected_frames
             return True
             
+        except RuntimeError as e:
+            error_msg = str(e).lower()
+            if "time-out" in error_msg:
+                print(f"❌ 自动收集出错: CARLA服务器超时")
+                print(f"   可能原因: 服务器负载过高或连接不稳定")
+            else:
+                print(f"❌ 自动收集出错: {e}")
+            return False
         except Exception as e:
             print(f"❌ 自动收集出错: {e}")
+            import traceback
+            traceback.print_exc()
             return False
         finally:
             cv2.destroyAllWindows()
@@ -763,15 +851,41 @@ class AutoFullTownCollector(BaseDataCollector):
                 
                 print(f"\n📍 路线 {idx+1}/{len(route_pairs)}: {start_idx} → {end_idx} ({distance:.1f}m)")
                 
-                valid, _, route_dist = self.validate_route(start_idx, end_idx)
-                if not valid:
-                    self.failed_routes.append((start_idx, end_idx, "不可达"))
-                    continue
+                # 路线验证（可通过配置禁用）
+                if self.enable_route_validation:
+                    valid, _, route_dist = self.validate_route(start_idx, end_idx)
+                    if not valid:
+                        self.failed_routes.append((start_idx, end_idx, "不可达"))
+                        continue
                 
-                if self.collect_route_data(start_idx, end_idx, save_path):
+                # 收集数据（支持重试）
+                success = False
+                retries = 0
+                max_retries = self.max_retries if self.retry_failed_routes else 1  # 至少重试1次
+                while not success and retries <= max_retries:
+                    if retries > 0:
+                        print(f"  🔄 重试 {retries}/{max_retries}...")
+                        # 重试前重置同步模式
+                        self._reset_sync_mode()
+                        time.sleep(2.0)
+                    
+                    try:
+                        success = self.collect_route_data(start_idx, end_idx, save_path)
+                    except Exception as e:
+                        print(f"  ❌ 路线收集异常: {e}")
+                        success = False
+                    
+                    if not success:
+                        retries += 1
+                
+                if success:
                     self.total_routes_completed += 1
                 else:
                     self.failed_routes.append((start_idx, end_idx, "收集失败"))
+                
+                # 路线之间暂停（用于清理资源）
+                if self.pause_between_routes > 0 and idx < len(route_pairs) - 1:
+                    time.sleep(self.pause_between_routes)
                 
                 # 进度
                 elapsed = time.time() - start_time
@@ -829,14 +943,17 @@ def load_config(config_path='auto_collection_config.json'):
         'traffic_rules': {'ignore_traffic_lights': True, 'ignore_signs': True, 'ignore_vehicles_percentage': 80},
         'world_settings': {'spawn_npc_vehicles': False, 'num_npc_vehicles': 0,
                           'spawn_npc_walkers': False, 'num_npc_walkers': 0},
-        'weather_settings': {'preset': 'ClearNoon'},
+        'weather_settings': {'preset': 'ClearNoon', 'custom': {}},
         'route_generation': {'strategy': 'smart', 'min_distance': 50.0, 'max_distance': 500.0,
-                            'target_routes': 200, 'overlap_threshold': 0.5},
+                            'target_routes': 200, 'overlap_threshold': 0.5, 'turn_priority_ratio': 3.0},
         'collection_settings': {'frames_per_route': 1000, 'save_path': './auto_collected_data',
-                               'simulation_fps': 20, 'target_speed_kmh': 10.0},
+                               'simulation_fps': 20, 'target_speed_kmh': 10.0, 'auto_save_interval': 200},
         'noise_settings': {'enabled': False, 'lateral_noise': True, 'longitudinal_noise': False,
                           'lateral_frequency': 25, 'lateral_intensity': 10, 'lateral_min_time': 1.0,
-                          'longitudinal_frequency': 15, 'longitudinal_intensity': 10, 'longitudinal_min_time': 2.0}
+                          'longitudinal_frequency': 15, 'longitudinal_intensity': 10, 'longitudinal_min_time': 2.0},
+        'advanced_settings': {'enable_route_validation': True, 'retry_failed_routes': False,
+                             'max_retries': 3, 'pause_between_routes': 2},
+        'multi_weather_settings': {'enabled': False, 'weather_preset': 'basic', 'custom_weather_list': []}
     }
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -856,35 +973,34 @@ def load_config(config_path='auto_collection_config.json'):
     return default_config
 
 
-def main():
-    """主函数"""
-    import argparse
+def get_weather_list(preset):
+    """根据预设名称获取天气列表"""
+    weather_presets = {
+        'basic': ['ClearNoon', 'CloudyNoon', 'ClearSunset', 'ClearNight'],
+        'all_noon': ['ClearNoon', 'CloudyNoon', 'WetNoon', 'SoftRainNoon', 'HardRainNoon'],
+        'all_sunset': ['ClearSunset', 'CloudySunset', 'WetSunset', 'SoftRainSunset', 'HardRainSunset'],
+        'all_night': ['ClearNight', 'CloudyNight', 'WetNight', 'SoftRainNight', 'HardRainNight'],
+        'clear_all': ['ClearNoon', 'ClearSunset', 'ClearNight'],
+        'rain_all': ['SoftRainNoon', 'HardRainNoon', 'SoftRainSunset', 'SoftRainNight'],
+        'full': ['ClearNoon', 'CloudyNoon', 'WetNoon', 'SoftRainNoon', 'HardRainNoon',
+                 'ClearSunset', 'CloudySunset', 'WetSunset',
+                 'ClearNight', 'CloudyNight', 'WetNight']
+    }
+    return weather_presets.get(preset, ['ClearNoon'])
+
+
+def run_single_weather_collection(config, weather_name, base_save_path):
+    """运行单个天气的数据收集"""
+    # 更新天气配置
+    config['weather_settings'] = {'preset': weather_name}
     
-    parser = argparse.ArgumentParser(description='全自动数据收集器')
-    parser.add_argument('--config', default='auto_collection_config.json')
-    parser.add_argument('--host', help='CARLA服务器地址')
-    parser.add_argument('--port', type=int, help='CARLA服务器端口')
-    parser.add_argument('--save-path', help='保存路径')
-    parser.add_argument('--strategy', choices=['smart', 'exhaustive'])
-    parser.add_argument('--target-routes', type=int)
-    parser.add_argument('--frames-per-route', type=int)
+    # 创建天气专属保存路径
+    weather_save_path = os.path.join(base_save_path, weather_name)
     
-    args = parser.parse_args()
-    config = load_config(args.config)
-    
-    # 命令行覆盖
-    if args.host:
-        config['carla_settings']['host'] = args.host
-    if args.port:
-        config['carla_settings']['port'] = args.port
-    if args.save_path:
-        config['collection_settings']['save_path'] = args.save_path
-    if args.strategy:
-        config['route_generation']['strategy'] = args.strategy
-    if args.target_routes:
-        config['route_generation']['target_routes'] = args.target_routes
-    if args.frames_per_route:
-        config['collection_settings']['frames_per_route'] = args.frames_per_route
+    print(f"\n{'='*70}")
+    print(f"🌤️  开始收集天气: {weather_name}")
+    print(f"📁 保存路径: {weather_save_path}")
+    print(f"{'='*70}")
     
     collector = AutoFullTownCollector(
         host=config['carla_settings']['host'],
@@ -907,14 +1023,21 @@ def main():
     collector.frames_per_route = config['collection_settings']['frames_per_route']
     collector.target_routes = config['route_generation']['target_routes']
     collector.overlap_threshold = config['route_generation']['overlap_threshold']
+    collector.turn_priority_ratio = config['route_generation'].get('turn_priority_ratio', 3.0)
+    collector.auto_save_interval = config['collection_settings'].get('auto_save_interval', 200)
+    
+    # 高级设置
+    advanced_config = config.get('advanced_settings', {})
+    collector.enable_route_validation = advanced_config.get('enable_route_validation', True)
+    collector.retry_failed_routes = advanced_config.get('retry_failed_routes', False)
+    collector.max_retries = advanced_config.get('max_retries', 3)
+    collector.pause_between_routes = advanced_config.get('pause_between_routes', 2)
     
     # 噪声配置
     noise_config = config.get('noise_settings', {})
     collector.noise_enabled = noise_config.get('enabled', False)
     collector.lateral_noise_enabled = noise_config.get('lateral_noise', True)
     collector.longitudinal_noise_enabled = noise_config.get('longitudinal_noise', False)
-    
-    # 噪声参数
     collector.lateral_frequency = noise_config.get('lateral_frequency', 25)
     collector.lateral_intensity = noise_config.get('lateral_intensity', 4)
     collector.lateral_min_time = noise_config.get('lateral_min_time', 0.5)
@@ -922,17 +1045,169 @@ def main():
     collector.longitudinal_intensity = noise_config.get('longitudinal_intensity', 10)
     collector.longitudinal_min_time = noise_config.get('longitudinal_min_time', 2.0)
     
-    if collector.noise_enabled:
-        print(f"\n🎲 噪声注入已启用:")
-        print(f"  • 横向噪声: {'✅' if collector.lateral_noise_enabled else '❌'} "
-              f"(freq={collector.lateral_frequency}, intensity={collector.lateral_intensity})")
-        print(f"  • 纵向噪声: {'✅' if collector.longitudinal_noise_enabled else '❌'} "
-              f"(freq={collector.longitudinal_frequency}, intensity={collector.longitudinal_intensity})")
-    
     collector.run(
-        save_path=config['collection_settings']['save_path'],
+        save_path=weather_save_path,
         strategy=config['route_generation']['strategy']
     )
+    
+    return collector.total_frames_collected
+
+
+def main():
+    """主函数"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='全自动数据收集器')
+    parser.add_argument('--config', default='auto_collection_config.json')
+    parser.add_argument('--host', help='CARLA服务器地址')
+    parser.add_argument('--port', type=int, help='CARLA服务器端口')
+    parser.add_argument('--save-path', help='保存路径')
+    parser.add_argument('--strategy', choices=['smart', 'exhaustive'])
+    parser.add_argument('--target-routes', type=int)
+    parser.add_argument('--frames-per-route', type=int)
+    # 多天气支持参数
+    parser.add_argument('--multi-weather', type=str, 
+                        help='多天气轮换预设: basic/all_noon/all_sunset/all_night/clear_all/rain_all/full')
+    parser.add_argument('--weather-list', nargs='+', 
+                        help='自定义天气列表，如: ClearNoon CloudyNoon WetNoon')
+    
+    args = parser.parse_args()
+    config = load_config(args.config)
+    
+    # 命令行覆盖
+    if args.host:
+        config['carla_settings']['host'] = args.host
+    if args.port:
+        config['carla_settings']['port'] = args.port
+    if args.save_path:
+        config['collection_settings']['save_path'] = args.save_path
+    if args.strategy:
+        config['route_generation']['strategy'] = args.strategy
+    if args.target_routes:
+        config['route_generation']['target_routes'] = args.target_routes
+    if args.frames_per_route:
+        config['collection_settings']['frames_per_route'] = args.frames_per_route
+    
+    # 确定天气列表
+    weather_list = None
+    
+    # 优先级: 命令行 --weather-list > 命令行 --multi-weather > 配置文件
+    if args.weather_list:
+        weather_list = args.weather_list
+        print(f"\n🌤️  使用命令行指定的天气列表: {weather_list}")
+    elif args.multi_weather:
+        weather_list = get_weather_list(args.multi_weather)
+        print(f"\n🌤️  使用天气预设 '{args.multi_weather}': {weather_list}")
+    else:
+        # 检查配置文件中的多天气设置
+        multi_weather_config = config.get('multi_weather_settings', {})
+        if multi_weather_config.get('enabled', False):
+            custom_list = multi_weather_config.get('custom_weather_list', [])
+            if custom_list:
+                weather_list = custom_list
+                print(f"\n🌤️  使用配置文件自定义天气列表: {weather_list}")
+            else:
+                preset = multi_weather_config.get('weather_preset', 'basic')
+                weather_list = get_weather_list(preset)
+                print(f"\n🌤️  使用配置文件天气预设 '{preset}': {weather_list}")
+    
+    # 多天气轮换模式
+    if weather_list and len(weather_list) > 1:
+        base_save_path = config['collection_settings']['save_path']
+        total_frames_all_weathers = 0
+        
+        print(f"\n{'='*70}")
+        print(f"🌈 多天气轮换收集模式")
+        print(f"{'='*70}")
+        print(f"天气数量: {len(weather_list)}")
+        print(f"天气列表: {', '.join(weather_list)}")
+        print(f"策略: {config['route_generation']['strategy']}")
+        print(f"基础保存路径: {base_save_path}")
+        print(f"{'='*70}\n")
+        
+        start_time = time.time()
+        
+        for idx, weather_name in enumerate(weather_list):
+            print(f"\n{'#'*70}")
+            print(f"# 天气 {idx+1}/{len(weather_list)}: {weather_name}")
+            print(f"{'#'*70}")
+            
+            try:
+                frames = run_single_weather_collection(config, weather_name, base_save_path)
+                total_frames_all_weathers += frames
+                print(f"\n✅ 天气 {weather_name} 收集完成，帧数: {frames}")
+            except Exception as e:
+                print(f"\n❌ 天气 {weather_name} 收集失败: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        total_time = time.time() - start_time
+        print(f"\n{'='*70}")
+        print(f"🎉 多天气轮换收集完成！")
+        print(f"{'='*70}")
+        print(f"总天气数: {len(weather_list)}")
+        print(f"总帧数: {total_frames_all_weathers}")
+        print(f"总耗时: {total_time/60:.1f} 分钟")
+        print(f"{'='*70}")
+    
+    # 单天气模式
+    else:
+        collector = AutoFullTownCollector(
+            host=config['carla_settings']['host'],
+            port=config['carla_settings']['port'],
+            town=config['carla_settings']['town'],
+            ignore_traffic_lights=config['traffic_rules']['ignore_traffic_lights'],
+            ignore_signs=config['traffic_rules']['ignore_signs'],
+            ignore_vehicles_percentage=config['traffic_rules']['ignore_vehicles_percentage'],
+            target_speed=config['collection_settings']['target_speed_kmh'],
+            simulation_fps=config['collection_settings']['simulation_fps'],
+            spawn_npc_vehicles=config['world_settings']['spawn_npc_vehicles'],
+            num_npc_vehicles=config['world_settings']['num_npc_vehicles'],
+            spawn_npc_walkers=config['world_settings']['spawn_npc_walkers'],
+            num_npc_walkers=config['world_settings']['num_npc_walkers'],
+            weather_config=config.get('weather_settings', {})
+        )
+        
+        collector.min_distance = config['route_generation']['min_distance']
+        collector.max_distance = config['route_generation']['max_distance']
+        collector.frames_per_route = config['collection_settings']['frames_per_route']
+        collector.target_routes = config['route_generation']['target_routes']
+        collector.overlap_threshold = config['route_generation']['overlap_threshold']
+        collector.turn_priority_ratio = config['route_generation'].get('turn_priority_ratio', 3.0)
+        collector.auto_save_interval = config['collection_settings'].get('auto_save_interval', 200)
+        
+        # 高级设置
+        advanced_config = config.get('advanced_settings', {})
+        collector.enable_route_validation = advanced_config.get('enable_route_validation', True)
+        collector.retry_failed_routes = advanced_config.get('retry_failed_routes', False)
+        collector.max_retries = advanced_config.get('max_retries', 3)
+        collector.pause_between_routes = advanced_config.get('pause_between_routes', 2)
+        
+        # 噪声配置
+        noise_config = config.get('noise_settings', {})
+        collector.noise_enabled = noise_config.get('enabled', False)
+        collector.lateral_noise_enabled = noise_config.get('lateral_noise', True)
+        collector.longitudinal_noise_enabled = noise_config.get('longitudinal_noise', False)
+        
+        # 噪声参数
+        collector.lateral_frequency = noise_config.get('lateral_frequency', 25)
+        collector.lateral_intensity = noise_config.get('lateral_intensity', 4)
+        collector.lateral_min_time = noise_config.get('lateral_min_time', 0.5)
+        collector.longitudinal_frequency = noise_config.get('longitudinal_frequency', 15)
+        collector.longitudinal_intensity = noise_config.get('longitudinal_intensity', 10)
+        collector.longitudinal_min_time = noise_config.get('longitudinal_min_time', 2.0)
+        
+        if collector.noise_enabled:
+            print(f"\n🎲 噪声注入已启用:")
+            print(f"  • 横向噪声: {'✅' if collector.lateral_noise_enabled else '❌'} "
+                  f"(freq={collector.lateral_frequency}, intensity={collector.lateral_intensity})")
+            print(f"  • 纵向噪声: {'✅' if collector.longitudinal_noise_enabled else '❌'} "
+                  f"(freq={collector.longitudinal_frequency}, intensity={collector.longitudinal_intensity})")
+        
+        collector.run(
+            save_path=config['collection_settings']['save_path'],
+            strategy=config['route_generation']['strategy']
+        )
 
 
 if __name__ == '__main__':

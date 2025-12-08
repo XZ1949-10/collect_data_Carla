@@ -255,7 +255,7 @@ class BaseDataCollector:
         print(f"正在连接到CARLA服务器 {self.host}:{self.port}...")
         
         self.client = carla.Client(self.host, self.port)
-        self.client.set_timeout(10.0)
+        self.client.set_timeout(30.0)  # 增加超时时间到30秒，避免路线切换时超时
         
         print(f"正在加载地图 {self.town}...")
         self.world = self.client.load_world(self.town)
@@ -783,7 +783,18 @@ class BaseDataCollector:
             else:
                 self.vehicle.apply_control(expert_control)
         
-        self.world.tick()
+        # 执行tick，带重试机制
+        max_tick_retries = 3
+        for attempt in range(max_tick_retries):
+            try:
+                self.world.tick()
+                break
+            except RuntimeError as e:
+                if "time-out" in str(e).lower() and attempt < max_tick_retries - 1:
+                    print(f"⚠️  tick超时，重试 {attempt + 1}/{max_tick_retries}...")
+                    time.sleep(0.5)
+                else:
+                    raise
     
     def _apply_noise(self, control, speed_kmh):
         """应用噪声到控制信号

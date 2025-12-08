@@ -82,7 +82,7 @@
         "_comment": "数据收集参数配置",
         "frames_per_route": 10000,
         "_comment_frames_per_route": "每条路线收集的最大帧数，实际可能因到达终点而提前结束",
-        "save_path": "E://carla_data2",
+        "save_path": "E://carla_data_lastnew",
         "_comment_save_path": "数据保存路径，相对路径或绝对路径均可",
         "auto_save_interval": 200,
         "_comment_auto_save_interval": "自动保存间隔（帧数），每收集N帧自动保存一次",
@@ -94,7 +94,7 @@
     
     "multi_weather_settings": {
         "_comment": "多天气轮换收集配置",
-        "enabled": true,
+        "enabled": false,
         "_comment_enabled": "是否启用多天气轮换（true=启用，每个天气收集完后自动切换下一个）",
         "weather_preset": "basic",
         "_comment_weather_preset": "天气组合预设：all_noon/all_sunset/all_night/clear_all/rain_all/basic/full",
@@ -137,12 +137,12 @@
         "_comment": "高级设置，一般不需要修改",
         "enable_route_validation": true,
         "_comment_enable_route_validation": "是否启用路线验证（true=验证路线可达性，false=跳过验证）",
-        "retry_failed_routes": false,
-        "_comment_retry_failed_routes": "是否重试失败的路线（true=重试，false=跳过）",
-        "max_retries": 3,
-        "_comment_max_retries": "最大重试次数（仅在retry_failed_routes=true时有效）",
-        "pause_between_routes": 2,
-        "_comment_pause_between_routes": "路线之间的暂停时间（秒），用于清理资源"
+        "retry_failed_routes": true,
+        "_comment_retry_failed_routes": "是否重试失败的路线（true=重试，false=跳过），建议开启以应对偶发超时",
+        "max_retries": 2,
+        "_comment_max_retries": "最大重试次数，建议2-3次",
+        "pause_between_routes": 3,
+        "_comment_pause_between_routes": "路线之间的暂停时间（秒），用于清理资源，建议3-5秒避免超时"
     },
     
     "_comment_tips": "使用建议",
